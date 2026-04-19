@@ -1,0 +1,17 @@
+pyyaml==6.0.3
+numpy
+matplotlib
+scikit-learn==1.7.2
+opencv-python
+mediapipe
+tqdm
+torchinfo==1.8.0
+
+torch==2.8.0
+torchvision==0.23.0
+
+python-dotenv==1.0.0
+pytest==8.2
+setuptools>=42
+wheel
+autopep8

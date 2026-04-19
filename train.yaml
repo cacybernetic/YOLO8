@@ -1,0 +1,47 @@
+# ============================================================================
+# Configuration d'entraînement YOLOv8
+# ============================================================================
+
+# --- Dataset ---
+dataset_dir: /home/mokira3d48/datasets/numpr   # doit contenir train/ et test/
+num_classes: 36                          # à adapter à votre dataset
+image_size: 640
+augment: true
+
+# --- Modèle ---
+version: n           # 'n' | 's' | 'm' | 'l' | 'x'
+resume: null         # chemin d'un checkpoint à reprendre (ex: checkpoints/epoch_0010.pt)
+
+# --- Optimisation ---
+epochs: 10
+batch_size: 8
+num_workers: 2
+max_lr: 0.01
+min_lr: 0.0001
+warmup_epochs: 3.0
+momentum: 0.937
+weight_decay: 0.0005
+scheduler: cosine    # cosine | linear
+grad_clip: 10.0
+grad_accumulation_steps: 16    # accumule les gradients sur N micro-batches avant optimizer.step()
+
+# --- Loss gains (YOLOv8 defaults) ---
+box_gain: 7.5
+cls_gain: 0.5
+dfl_gain: 1.5
+
+# --- Checkpoints ---
+checkpoint_dir: checkpoints
+max_checkpoints: 5                       # rotation FIFO: garde les N plus récents
+save_best_metric: map50                  # map50 | map | precision | recall
+auto_resume: true                        # charge automatiquement le dernier epoch_*.pt si `resume` est null
+
+# --- Divers ---
+device: cpu
+seed: 0
+log_interval: 10
+val_interval: 1
+
+# --- Validation / NMS ---
+conf_threshold: 0.001
+iou_threshold: 0.7
