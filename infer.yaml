@@ -58,9 +58,9 @@ class_names:
   - Y
   - Z
 
-
 # --- Rendu ---
 line_thickness: 2
 font_scale: 0.5
+box_opacity: 0.75                  # opacité globale du graphisme des boites [0.0 - 1.0]
 save_path: null                    # ex: "output.jpg" pour sauvegarder l'image annotée
 show: true                         # false pour désactiver cv2.imshow (utile en serveur headless)

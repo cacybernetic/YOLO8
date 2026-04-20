@@ -85,6 +85,7 @@ class InferConfig:
     class_names: Optional[list] = None        # liste des noms de classes (len == num_classes)
     line_thickness: int = 2
     font_scale: float = 0.5
+    box_opacity: float = 0.75                 # opacité globale du graphisme des boites [0, 1]
     save_path: Optional[str] = None           # si défini, sauvegarde l'image annotée
     show: bool = True                         # affiche avec cv2.imshow
 

@@ -71,17 +71,122 @@ def scale_boxes_to_original(boxes_xyxy, ratio, pad, orig_shape):
     return boxes
 
 
+def _draw_futuristic_box(img, x1, y1, x2, y2, color, conf, label,
+                         thickness=2, font_scale=0.5,
+                         corner_ratio=0.22, gauge_width=None,
+                         opacity=0.75):
+    """Dessine une boite futuriste sur `img` (modifiée en place).
+
+    Éléments dessinés:
+      - cadre rectangulaire fin (1px) faisant le tour complet de la boite
+      - 4 coins en L plus épais par-dessus
+      - petits tabs carrés aux 4 sommets (effet "target lock")
+      - jauge verticale à droite de la boite, remplie proportionnellement à `conf`
+      - label au-dessus du coin supérieur gauche, avec ombre portée
+
+    Toute la boite (cadre + coins + tabs + jauge) est fondue avec l'image d'origine
+    via `opacity`. Le texte du label reste à pleine opacité pour rester lisible.
+    """
+    h_img, w_img = img.shape[:2]
+    w = x2 - x1
+    h = y2 - y1
+    if w <= 0 or h <= 0:
+        return img
+
+    conf = max(0.0, min(1.0, float(conf)))
+    lt = cv2.LINE_AA
+
+    # Tout le "graphisme" de la boite est dessiné sur `overlay`, puis fondu dans
+    # `img` avec `opacity`. Le texte, lui, est dessiné ensuite directement sur
+    # `img` pour rester parfaitement net.
+    overlay = img.copy()
+
+    # === 1) Cadre rectangulaire fin (1px) ===
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), color, thickness=1, lineType=lt)
+
+    # === 2) Coins en L (plus épais, par-dessus le cadre) ===
+    cl = int(max(8, min(w, h) * corner_ratio))
+    # Top-left
+    cv2.line(overlay, (x1, y1), (x1 + cl, y1), color, thickness, lt)
+    cv2.line(overlay, (x1, y1), (x1, y1 + cl), color, thickness, lt)
+    # Top-right
+    cv2.line(overlay, (x2, y1), (x2 - cl, y1), color, thickness, lt)
+    cv2.line(overlay, (x2, y1), (x2, y1 + cl), color, thickness, lt)
+    # Bottom-left
+    cv2.line(overlay, (x1, y2), (x1 + cl, y2), color, thickness, lt)
+    cv2.line(overlay, (x1, y2), (x1, y2 - cl), color, thickness, lt)
+    # Bottom-right
+    cv2.line(overlay, (x2, y2), (x2 - cl, y2), color, thickness, lt)
+    cv2.line(overlay, (x2, y2), (x2, y2 - cl), color, thickness, lt)
+
+    # === 3) Petits tabs carrés aux 4 sommets ===
+    tab = max(2, thickness)
+    for (cx, cy) in [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]:
+        cv2.rectangle(overlay, (cx - tab, cy - tab), (cx + tab, cy + tab),
+                      color, thickness=cv2.FILLED)
+
+    # === 4) Jauge verticale de confiance ===
+    gw = gauge_width if gauge_width is not None else max(4, thickness * 2)
+    offset = max(4, thickness + 1)
+    gx1 = x2 + offset
+    gx2 = gx1 + gw
+    # Si la jauge dépasse à droite, on la place à l'intérieur de la boite
+    if gx2 >= w_img:
+        gx2 = max(0, x2 - offset)
+        gx1 = max(0, gx2 - gw)
+    gy1 = max(0, y1)
+    gy2 = min(h_img - 1, y2)
+    if gx2 > gx1 and gy2 > gy1:
+        # Fond de la jauge: teinte colorée légère (blend local sur overlay)
+        roi_ov = overlay[gy1:gy2 + 1, gx1:gx2 + 1]
+        tint = np.full_like(roi_ov, color, dtype=np.uint8)
+        alpha_bg = 0.35
+        overlay[gy1:gy2 + 1, gx1:gx2 + 1] = cv2.addWeighted(
+            tint, alpha_bg, roi_ov, 1 - alpha_bg, 0
+        )
+        # Partie remplie depuis le bas, proportionnelle à la confiance
+        fill_h = int((gy2 - gy1) * conf)
+        fill_top = gy2 - fill_h
+        if fill_h > 0:
+            cv2.rectangle(overlay, (gx1, fill_top), (gx2, gy2),
+                          color, thickness=cv2.FILLED)
+        # Bordure fine de la jauge
+        cv2.rectangle(overlay, (gx1, gy1), (gx2, gy2), color, 1, lt)
+
+    # === 5) Fondu global: toute la boite devient semi-transparente ===
+    cv2.addWeighted(overlay, opacity, img, 1 - opacity, 0, dst=img)
+
+    # === 6) Label + confiance (dessiné APRÈS le blend, à pleine opacité) ===
+    label_text = f"{label}: {conf:.2f}"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (tw, th), baseline = cv2.getTextSize(label_text, font, font_scale, 1)
+
+    label_x = x1
+    label_y = y1 - 6
+    if label_y - th < 0:
+        label_y = y1 + th + 4
+    if label_x + tw >= w_img:
+        label_x = max(0, w_img - tw - 2)
+
+    # Ombre noire décalée d'1px pour la lisibilité sur fond clair
+    cv2.putText(img, label_text, (label_x + 1, label_y + 1),
+                font, font_scale, (0, 0, 0), thickness=2, lineType=lt)
+    cv2.putText(img, label_text, (label_x, label_y),
+                font, font_scale, color, thickness=1, lineType=lt)
+    return img
+
+
 def draw_detections(img, detections, class_names, colors,
-                    line_thickness=2, font_scale=0.5):
-    """Dessine les boites + labels sur `img` (modifie en place et retourne).
+                    line_thickness=2, font_scale=0.5, opacity=0.75):
+    """Dessine les boites futuristes + labels sur `img` (modifie en place et retourne).
 
     Args:
         img: image BGR (H, W, 3) uint8
         detections: tenseur (N, 6) [x1, y1, x2, y2, conf, cls] en coords image originale
         class_names: liste de noms de classes
         colors: liste de couleurs BGR, une par classe
+        opacity: opacité globale des éléments graphiques de la boite [0, 1]
     """
-    font = cv2.FONT_HERSHEY_SIMPLEX
     for det in detections:
         x1, y1, x2, y2, conf, cls_id = det.tolist()
         cls_id = int(cls_id)
@@ -89,22 +194,12 @@ def draw_detections(img, detections, class_names, colors,
 
         color = colors[cls_id % len(colors)]
         cls_name = str(class_names[cls_id]) if cls_id < len(class_names) else f"class_{cls_id}"
-        label = f"{cls_name} {conf:.2f}"
 
-        # Boite
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness=line_thickness)
-
-        # Fond du label
-        (tw, th), baseline = cv2.getTextSize(label, font, font_scale, thickness=1)
-        ytop = max(y1 - th - baseline - 2, 0)
-        cv2.rectangle(img, (x1, ytop), (x1 + tw + 2, ytop + th + baseline + 2),
-                      color, thickness=cv2.FILLED)
-
-        # Texte (noir ou blanc selon luminance de la couleur)
-        luminance = 0.299 * color[2] + 0.587 * color[1] + 0.114 * color[0]
-        text_color = (0, 0, 0) if luminance > 160 else (255, 255, 255)
-        cv2.putText(img, label, (x1 + 1, ytop + th + 1),
-                    font, font_scale, text_color, thickness=1, lineType=cv2.LINE_AA)
+        _draw_futuristic_box(
+            img, x1, y1, x2, y2, color, float(conf), cls_name,
+            thickness=line_thickness, font_scale=font_scale,
+            opacity=opacity,
+        )
     return img
 
 
@@ -197,6 +292,7 @@ def run_inference(cfg: InferConfig, image_path: str,
         annotated, detections.cpu(), class_names, colors,
         line_thickness=cfg.line_thickness,
         font_scale=cfg.font_scale,
+        opacity=cfg.box_opacity,
     )
 
     # Log console des détections
