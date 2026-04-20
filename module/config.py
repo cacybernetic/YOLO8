@@ -19,6 +19,7 @@ class TrainConfig:
     image_size: int = 640
     augment: bool = True
     augment_params: Optional[Dict[str, Any]] = None  # voir DEFAULT_AUGMENT_PARAMS
+    check_images: bool = True     # vérifie l'intégrité des images au démarrage (lent mais évite crashs)
 
     # Modèle
     version: str = 'n'        # 'n', 's', 'm', 'l', 'x'

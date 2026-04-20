@@ -7,6 +7,7 @@ dataset_dir: /chemin/vers/dataset_dir   # doit contenir train/ et test/
 num_classes: 80                          # à adapter à votre dataset
 image_size: 640
 augment: true
+check_images: true                       # vérifie l'intégrité des images au démarrage (plus long mais évite crashs)
 
 # --- Augmentations (ignoré si augment: false) ---
 # Laissez à null pour utiliser les defaults (voir DEFAULT_AUGMENT_PARAMS dans dataset.py).

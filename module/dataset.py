@@ -336,7 +336,8 @@ class YOLODataset(Dataset):
     """Dataset YOLO (détection d'objets) avec augmentations configurables."""
 
     def __init__(self, root_dir, split='train', image_size=640,
-                 augment=False, augment_params=None):
+                 augment=False, augment_params=None, strict=False, verbose=True,
+                 check_images=True):
         """
         Args:
             root_dir: dossier racine contenant `train/` et `test/`
@@ -345,6 +346,12 @@ class YOLODataset(Dataset):
             augment: active les augmentations. À False pour la val/test.
             augment_params: dict d'hyperparamètres d'augmentation (cf. DEFAULT_AUGMENT_PARAMS).
                             Si None, utilise les défauts. Les clés manquantes sont complétées.
+            strict: si True, lève une exception dès qu'un échantillon est invalide au scan.
+                    Sinon (défaut), les échantillons invalides sont silencieusement filtrés.
+            verbose: affiche un rapport de scan (nb. échantillons valides/filtrés).
+            check_images: vérifie au scan que chaque image est lisible (décodable par OpenCV).
+                          Plus lent au démarrage mais évite les crashs pendant l'entraînement.
+                          Pour un très gros dataset déjà validé, on peut le mettre à False.
         """
         super().__init__()
         self.root = Path(root_dir) / split
@@ -364,44 +371,267 @@ class YOLODataset(Dataset):
         if not labels_dir.is_dir():
             raise FileNotFoundError(f"Dossier labels introuvable: {labels_dir}")
 
-        self.image_paths = sorted([
+        all_images = sorted([
             p for p in images_dir.iterdir()
             if p.suffix.lower() in IMAGE_EXTS
         ])
 
-        self.label_paths = []
-        for img_path in self.image_paths:
-            label_path = labels_dir / (img_path.stem + '.txt')
-            self.label_paths.append(label_path)
+        if len(all_images) == 0:
+            raise RuntimeError(f"Aucune image trouvée dans {images_dir}")
+
+        # Scan + filtrage des échantillons valides
+        self.image_paths, self.label_paths = self._scan_and_filter(
+            all_images, labels_dir,
+            strict=strict, verbose=verbose, check_images=check_images,
+        )
 
         if len(self.image_paths) == 0:
-            raise RuntimeError(f"Aucune image trouvée dans {images_dir}")
+            raise RuntimeError(
+                f"Aucun échantillon valide après filtrage dans {self.root}. "
+                f"Vérifiez que les fichiers .txt existent et sont bien formatés."
+            )
+
+    def _scan_and_filter(self, image_paths, labels_dir,
+                          strict=False, verbose=True, check_images=True):
+        """Scanne les fichiers de labels et images, retourne les échantillons valides.
+
+        Un échantillon est invalide si :
+          - le fichier de label n'existe pas
+          - une ligne a un nombre de colonnes != 5
+          - une valeur n'est pas convertible en float
+          - `cls` est négatif ou non entier
+          - `cx`, `cy`, `w`, `h` sont hors [0, 1]
+          - `w` ou `h` est <= 0
+          - l'image est illisible / corrompue (si check_images=True)
+
+        En mode non-strict, les échantillons invalides sont filtrés avec un warning.
+        En mode strict, la première erreur lève une exception.
+        """
+        valid_images, valid_labels = [], []
+        stats = {
+            'total': len(image_paths),
+            'missing_label': 0,
+            'empty_label': 0,
+            'bad_format': 0,
+            'bad_values': 0,
+            'corrupt_image': 0,
+            'kept': 0,
+            'kept_with_cleaning': 0,
+        }
+        errors_sample = []
+
+        # tqdm est optionnel: on l'utilise s'il est dispo, sinon iteration simple
+        try:
+            from tqdm import tqdm as _tqdm
+            iterator = _tqdm(image_paths,
+                             desc=f"[dataset:{self.root.name}] scan",
+                             disable=not verbose, leave=False,
+                             dynamic_ncols=True)
+        except ImportError:
+            iterator = image_paths
+
+        for img_path in iterator:
+            label_path = labels_dir / (img_path.stem + '.txt')
+
+            # 1) Validation du label
+            reason, had_bad_lines = self._check_label_file(label_path)
+            if reason is not None:
+                stats[reason] += 1
+                if len(errors_sample) < 5:
+                    errors_sample.append(f"{img_path.name}: {reason}")
+                if strict:
+                    raise ValueError(
+                        f"Fichier label invalide: {label_path} ({reason})"
+                    )
+                continue
+
+            # 2) Validation de l'image (décodage complet)
+            if check_images and not self._check_image_file(img_path):
+                stats['corrupt_image'] += 1
+                if len(errors_sample) < 5:
+                    errors_sample.append(f"{img_path.name}: corrupt_image")
+                if strict:
+                    raise RuntimeError(f"Image illisible ou corrompue: {img_path}")
+                continue
+
+            valid_images.append(img_path)
+            valid_labels.append(label_path)
+            stats['kept'] += 1
+            if had_bad_lines:
+                stats['kept_with_cleaning'] += 1
+
+        if verbose:
+            split_name = self.root.name
+            dropped = stats['total'] - stats['kept']
+            print(f"[dataset:{split_name}] scan: {stats['kept']}/{stats['total']} "
+                  f"échantillons valides (filtrés: {dropped})")
+            if dropped > 0:
+                print(f"  - sans label:         {stats['missing_label']}")
+                print(f"  - label vide:         {stats['empty_label']}")
+                print(f"  - format invalide:    {stats['bad_format']}")
+                print(f"  - valeurs invalides:  {stats['bad_values']}")
+                if check_images:
+                    print(f"  - image corrompue:    {stats['corrupt_image']}")
+                if errors_sample:
+                    print(f"  exemples d'erreurs:")
+                    for e in errors_sample:
+                        print(f"    · {e}")
+            if stats['kept_with_cleaning'] > 0:
+                print(f"  - {stats['kept_with_cleaning']} fichier(s) conservés après "
+                      f"nettoyage de lignes malformées")
+
+        return valid_images, valid_labels
+
+    @staticmethod
+    def _check_image_file(img_path):
+        """Vérifie qu'une image peut être décodée par OpenCV.
+
+        On utilise cv2.imdecode plutôt que cv2.imread pour capturer les erreurs
+        de décodage sans faire planter le worker avec une RuntimeError non
+        catchable (certains backends OpenCV fautent bruyamment).
+        Retourne True si l'image est lisible ET a une shape valide.
+        """
+        try:
+            data = np.fromfile(str(img_path), dtype=np.uint8)
+            if data.size == 0:
+                return False
+            img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            if img is None:
+                return False
+            h, w = img.shape[:2]
+            if h < 2 or w < 2:
+                return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _check_label_file(label_path):
+        """Vérifie la validité d'un fichier label YOLO.
+
+        Retourne:
+            (reason, had_bad_lines)
+            reason: None si valide (au moins 1 ligne correcte), sinon une chaîne
+                    parmi {'missing_label', 'empty_label', 'bad_format', 'bad_values'}
+            had_bad_lines: True si >=1 ligne a été droppée mais le fichier reste
+                           globalement utilisable (au moins 1 ligne valide)
+        """
+        if not label_path.exists():
+            return 'missing_label', False
+
+        try:
+            with open(label_path, 'r') as f:
+                raw_lines = f.readlines()
+        except OSError:
+            return 'bad_format', False
+
+        raw_lines = [l.strip() for l in raw_lines if l.strip()]
+        if len(raw_lines) == 0:
+            # Un fichier vide est accepté (image sans objet) — c'est valide.
+            return None, False
+
+        n_good = 0
+        n_bad = 0
+        worst_reason = None  # pour classer les erreurs si tout le fichier est mauvais
+
+        for line in raw_lines:
+            parts = line.split()
+            if len(parts) != 5:
+                n_bad += 1
+                if worst_reason is None:
+                    worst_reason = 'bad_format'
+                continue
+            try:
+                cls, cx, cy, w, h = [float(x) for x in parts]
+            except ValueError:
+                n_bad += 1
+                if worst_reason is None:
+                    worst_reason = 'bad_format'
+                continue
+
+            # Validation des valeurs
+            if cls < 0 or cls != int(cls):
+                n_bad += 1
+                worst_reason = 'bad_values'
+                continue
+            if not (0.0 <= cx <= 1.0 and 0.0 <= cy <= 1.0):
+                n_bad += 1
+                worst_reason = 'bad_values'
+                continue
+            if not (0.0 < w <= 1.0 and 0.0 < h <= 1.0):
+                n_bad += 1
+                worst_reason = 'bad_values'
+                continue
+
+            n_good += 1
+
+        if n_good == 0:
+            return worst_reason, False
+        return None, (n_bad > 0)
 
     def __len__(self):
         return len(self.image_paths)
 
     def load_labels(self, label_path):
-        """Charge un fichier label YOLO -> (N, 5)."""
+        """Charge un fichier label YOLO -> (N, 5).
+
+        Les lignes malformées (nombre de colonnes incorrect, valeurs non
+        convertibles, valeurs hors [0,1]) sont silencieusement ignorées.
+        Le filtrage en amont (dans _scan_and_filter) a déjà écarté les
+        fichiers entièrement invalides, donc cette fonction est une sécurité
+        supplémentaire.
+        """
         if not label_path.exists():
             return np.zeros((0, 5), dtype=np.float32)
         with open(label_path, 'r') as f:
-            lines = [l.strip() for l in f.readlines() if l.strip()]
-        if len(lines) == 0:
+            raw_lines = [l.strip() for l in f.readlines() if l.strip()]
+        if len(raw_lines) == 0:
             return np.zeros((0, 5), dtype=np.float32)
-        labels = np.array([[float(x) for x in line.split()] for line in lines],
-                          dtype=np.float32)
-        return labels[:, :5]
+
+        valid = []
+        for line in raw_lines:
+            parts = line.split()
+            if len(parts) != 5:
+                continue
+            try:
+                row = [float(x) for x in parts]
+            except ValueError:
+                continue
+            cls, cx, cy, w, h = row
+            if cls < 0 or cls != int(cls):
+                continue
+            if not (0.0 <= cx <= 1.0 and 0.0 <= cy <= 1.0):
+                continue
+            if not (0.0 < w <= 1.0 and 0.0 < h <= 1.0):
+                continue
+            valid.append(row)
+
+        if len(valid) == 0:
+            return np.zeros((0, 5), dtype=np.float32)
+        return np.array(valid, dtype=np.float32)
 
     def _load_and_preprocess(self, idx):
-        """Lit une image + ses labels et applique letterbox (labels YOLO normalisés)."""
+        """Lit une image + ses labels et applique letterbox (labels YOLO normalisés).
+
+        Retourne None si l'image est illisible (corrompue, disparue, etc.)
+        L'appelant doit gérer ce cas.
+        """
         img_path = self.image_paths[idx]
         label_path = self.label_paths[idx]
 
-        img = cv2.imread(str(img_path))
-        if img is None:
-            raise RuntimeError(f"Impossible de lire l'image: {img_path}")
-        orig_h, orig_w = img.shape[:2]
+        # Décodage via imdecode pour éviter les crashs bruyants de cv2.imread
+        try:
+            data = np.fromfile(str(img_path), dtype=np.uint8)
+            if data.size == 0:
+                return None
+            img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        except Exception:
+            return None
 
+        if img is None or img.shape[0] < 2 or img.shape[1] < 2:
+            return None
+
+        orig_h, orig_w = img.shape[:2]
         labels = self.load_labels(label_path)
         img, ratio, pad = letterbox(img, new_shape=self.image_size)
         labels = adjust_labels_after_letterbox(
@@ -410,7 +640,32 @@ class YOLODataset(Dataset):
         return img, labels, str(img_path)
 
     def __getitem__(self, idx):
-        img, labels, img_path = self._load_and_preprocess(idx)
+        # Tentative de chargement avec fallback sur un autre échantillon si
+        # l'image est corrompue (au cas où le scan n'aurait pas attrapé le
+        # problème, par ex. fichier modifié depuis).
+        max_retries = min(10, len(self))
+        tried = set()
+        for attempt in range(max_retries):
+            if attempt > 0:
+                # Échantillon alternatif aléatoire
+                idx = random.randint(0, len(self) - 1)
+                while idx in tried and len(tried) < len(self):
+                    idx = random.randint(0, len(self) - 1)
+            tried.add(idx)
+
+            result = self._load_and_preprocess(idx)
+            if result is not None:
+                img, labels, img_path = result
+                break
+            # Log discret: on signale la première fois seulement
+            if attempt == 0:
+                print(f"[dataset] image illisible ignorée: "
+                      f"{self.image_paths[idx].name} (fallback sur un autre échantillon)")
+        else:
+            raise RuntimeError(
+                f"Impossible de charger un échantillon valide après {max_retries} "
+                f"tentatives. Vérifiez l'intégrité du dataset."
+            )
 
         if self.augment:
             p = self.aug
@@ -439,10 +694,12 @@ class YOLODataset(Dataset):
             # 4) MixUp avec un autre échantillon (déjà letterboxé pour matcher la taille)
             if p['mixup'] > 0 and random.random() < p['mixup']:
                 j = random.randint(0, len(self) - 1)
-                img2, labels2, _ = self._load_and_preprocess(j)
-                if p['flip_lr'] > 0 and random.random() < p['flip_lr']:
-                    img2, labels2 = horizontal_flip(img2, labels2)
-                img, labels = mixup(img, labels, img2, labels2)
+                mix_result = self._load_and_preprocess(j)
+                if mix_result is not None:
+                    img2, labels2, _ = mix_result
+                    if p['flip_lr'] > 0 and random.random() < p['flip_lr']:
+                        img2, labels2 = horizontal_flip(img2, labels2)
+                    img, labels = mixup(img, labels, img2, labels2)
 
             # 5) Cutout (ne modifie pas les labels)
             if p['cutout'] > 0 and random.random() < p['cutout']:

@@ -413,9 +413,11 @@ def main():
     # --- Data ---
     train_ds = YOLODataset(cfg.dataset_dir, split='train',
                            image_size=cfg.image_size, augment=cfg.augment,
-                           augment_params=cfg.augment_params)
+                           augment_params=cfg.augment_params,
+                           check_images=cfg.check_images)
     val_ds = YOLODataset(cfg.dataset_dir, split='test',
-                         image_size=cfg.image_size, augment=False)
+                         image_size=cfg.image_size, augment=False,
+                         check_images=cfg.check_images)
     print(f"[data] train={len(train_ds)} | val={len(val_ds)}")
 
     train_loader = DataLoader(
