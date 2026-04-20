@@ -6,7 +6,7 @@ Utilisé par train.py et evaluate.py pour parser train.yaml / eval.yaml.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import yaml
 
@@ -18,6 +18,7 @@ class TrainConfig:
     num_classes: int
     image_size: int = 640
     augment: bool = True
+    augment_params: Optional[Dict[str, Any]] = None  # voir DEFAULT_AUGMENT_PARAMS
 
     # Modèle
     version: str = 'n'        # 'n', 's', 'm', 'l', 'x'

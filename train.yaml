@@ -3,19 +3,47 @@
 # ============================================================================
 
 # --- Dataset ---
-dataset_dir: /home/mokira3d48/datasets/numpr   # doit contenir train/ et test/
-num_classes: 36                          # à adapter à votre dataset
+dataset_dir: /chemin/vers/dataset_dir   # doit contenir train/ et test/
+num_classes: 80                          # à adapter à votre dataset
 image_size: 640
 augment: true
+
+# --- Augmentations (ignoré si augment: false) ---
+# Laissez à null pour utiliser les defaults (voir DEFAULT_AUGMENT_PARAMS dans dataset.py).
+# Les valeurs ci-dessous suivent les défauts YOLOv8.
+augment_params:
+  # HSV color jitter (±fraction)
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+  # Transformations géométriques
+  degrees: 0.0            # rotation ± degrés (0 = désactivé)
+  translate: 0.1          # translation ± fraction de l'image
+  scale: 0.5              # scale ± (0.5 -> crop/zoom entre 0.5x et 1.5x)
+  shear: 0.0              # shear ± degrés
+  perspective: 0.0        # perspective ± (0.0 = désactivé, ~0.0005 pour l'activer)
+  # Flips
+  flip_lr: 0.5            # proba flip horizontal
+  flip_ud: 0.0            # proba flip vertical (à activer seulement si pertinent)
+  # MixUp (mélange 2 images)
+  mixup: 0.0              # proba d'appliquer MixUp (ex: 0.15 pour YOLOv8-L/X)
+  # Cutout (patches aléatoires)
+  cutout: 0.0             # proba d'appliquer Cutout
+  cutout_n_max: 4         # nombre max de patches
+  cutout_size_max: 0.25   # taille max d'un patch (fraction de l'image)
+  # Divers
+  blur: 0.0               # proba flou gaussien
+  noise: 0.0              # proba bruit gaussien
+  grayscale: 0.0          # proba conversion en niveaux de gris
 
 # --- Modèle ---
 version: n           # 'n' | 's' | 'm' | 'l' | 'x'
 resume: null         # chemin d'un checkpoint à reprendre (ex: checkpoints/epoch_0010.pt)
 
 # --- Optimisation ---
-epochs: 10
-batch_size: 8
-num_workers: 2
+epochs: 100
+batch_size: 16
+num_workers: 4
 max_lr: 0.01
 min_lr: 0.0001
 warmup_epochs: 3.0
@@ -23,7 +51,7 @@ momentum: 0.937
 weight_decay: 0.0005
 scheduler: cosine    # cosine | linear
 grad_clip: 10.0
-grad_accumulation_steps: 16    # accumule les gradients sur N micro-batches avant optimizer.step()
+grad_accumulation_steps: 1    # accumule les gradients sur N micro-batches avant optimizer.step()
 
 # --- Loss gains (YOLOv8 defaults) ---
 box_gain: 7.5
@@ -37,7 +65,7 @@ save_best_metric: map50                  # map50 | map | precision | recall
 auto_resume: true                        # charge automatiquement le dernier epoch_*.pt si `resume` est null
 
 # --- Divers ---
-device: cpu
+device: cuda
 seed: 0
 log_interval: 10
 val_interval: 1

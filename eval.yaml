@@ -2,8 +2,8 @@
 # Configuration d'évaluation YOLOv8
 # ============================================================================
 
-dataset_dir: /chemin/vers/dataset_dir
-num_classes: 80
+dataset_dir: /home/mokira3d48/datasets/numpr
+num_classes: 36
 weights: checkpoints/best.pt
 
 version: n
