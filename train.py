@@ -293,21 +293,28 @@ def train_one_epoch(model, loader, loss_fn, optimizer, scheduler,
         running['total'] += loss.item() * bs
         running['n'] += bs
 
-        # Mise à jour de la barre de progression
+        # Moyennes courantes (running averages) depuis le début de l'epoch
+        n_seen = max(running['n'], 1)
+        avg_loss = running['total'] / n_seen
+        avg_box = running['box'] / n_seen
+        avg_cls = running['cls'] / n_seen
+        avg_dfl = running['dfl'] / n_seen
+
+        # Mise à jour de la barre de progression avec les moyennes
         pbar.set_postfix({
             'lr': f"{optimizer.param_groups[0]['lr']:.5f}",
-            'loss': f"{loss.item():.4f}",
-            'box': f"{loss_box.item():.4f}",
-            'cls': f"{loss_cls.item():.4f}",
-            'dfl': f"{loss_dfl.item():.4f}",
+            'loss': f"{avg_loss:.4f}",
+            'box': f"{avg_box:.4f}",
+            'cls': f"{avg_cls:.4f}",
+            'dfl': f"{avg_dfl:.4f}",
         })
 
         if log_interval and ((step + 1) % log_interval == 0):
             pbar.write(
                 f"  step {step+1}/{total_steps} "
                 f"| lr {optimizer.param_groups[0]['lr']:.5f} "
-                f"| loss {loss.item():.4f} "
-                f"(box {loss_box.item():.4f} cls {loss_cls.item():.4f} dfl {loss_dfl.item():.4f})"
+                f"| avg_loss {avg_loss:.4f} "
+                f"(box {avg_box:.4f} cls {avg_cls:.4f} dfl {avg_dfl:.4f})"
             )
 
     n = max(running['n'], 1)
