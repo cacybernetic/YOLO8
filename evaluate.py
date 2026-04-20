@@ -16,7 +16,7 @@ from module.config import load_eval_config, EvalConfig
 from module.dataset import YOLODataset
 from module.metrics import MetricAccumulator, non_max_suppression
 from module.model import MyYolo
-from .train import build_val_targets
+from train import build_val_targets
 
 
 @torch.no_grad()
