@@ -255,6 +255,7 @@ def train_one_epoch(model, loader, loss_fn, optimizer, scheduler,
     accum = max(int(grad_accumulation_steps), 1)
     optimizer.zero_grad(set_to_none=True)
     total_steps = len(loader)
+    has_pending_grads = False  # True dès qu'un .backward() a ajouté des gradients non encore appliqués
 
     pbar = tqdm(
         enumerate(loader),
@@ -276,15 +277,16 @@ def train_one_epoch(model, loader, loss_fn, optimizer, scheduler,
 
         # Mise à l'échelle pour l'accumulation de gradient
         (loss / accum).backward()
+        has_pending_grads = True
 
-        # Pas d'optimizer uniquement à la fin d'un groupe d'accumulation
-        # (ou à la toute fin de l'epoch, pour ne pas perdre les derniers micro-batches)
-        is_accum_boundary = ((step + 1) % accum == 0) or ((step + 1) == total_steps)
-        if is_accum_boundary:
+        # Pas d'optimisation seulement aux frontières d'accumulation.
+        # Le reste (accumulation incomplète en fin d'epoch) est flushé APRÈS la boucle.
+        if (step + 1) % accum == 0:
             if grad_clip and grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
+            has_pending_grads = False
 
         bs = images.size(0)
         running['box'] += loss_box.item() * bs
@@ -316,6 +318,16 @@ def train_one_epoch(model, loader, loss_fn, optimizer, scheduler,
                 f"| avg_loss {avg_loss:.4f} "
                 f"(box {avg_box:.4f} cls {avg_cls:.4f} dfl {avg_dfl:.4f})"
             )
+
+    # Flush de fin d'epoch: si l'epoch s'est terminée au milieu d'un groupe
+    # d'accumulation, on applique quand même ce qui a été accumulé pour ne pas
+    # perdre ces gradients.
+    if has_pending_grads:
+        if grad_clip and grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        has_pending_grads = False
 
     n = max(running['n'], 1)
     elapsed = time.time() - t0
