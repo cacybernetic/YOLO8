@@ -73,6 +73,22 @@ class EvalConfig:
     split: str = 'test'        # 'test' ou 'train'
 
 
+@dataclass
+class InferConfig:
+    weights: str                              # chemin du checkpoint à charger
+    num_classes: int
+    version: str = 'n'
+    image_size: int = 640
+    device: str = 'cuda'
+    conf_threshold: float = 0.25              # plus élevé qu'en eval: on veut des boites visibles
+    iou_threshold: float = 0.45
+    class_names: Optional[list] = None        # liste des noms de classes (len == num_classes)
+    line_thickness: int = 2
+    font_scale: float = 0.5
+    save_path: Optional[str] = None           # si défini, sauvegarde l'image annotée
+    show: bool = True                         # affiche avec cv2.imshow
+
+
 def _load_yaml(path):
     path = Path(path)
     if not path.exists():
@@ -100,3 +116,13 @@ def load_eval_config(path) -> EvalConfig:
         print(f"[config] Clés ignorées: {sorted(unknown)}")
     data = {k: v for k, v in data.items() if k in fields}
     return EvalConfig(**data)
+
+
+def load_infer_config(path) -> InferConfig:
+    data = _load_yaml(path)
+    fields = {f for f in InferConfig.__dataclass_fields__}
+    unknown = set(data.keys()) - fields
+    if unknown:
+        print(f"[config] Clés ignorées: {sorted(unknown)}")
+    data = {k: v for k, v in data.items() if k in fields}
+    return InferConfig(**data)

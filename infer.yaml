@@ -1,0 +1,66 @@
+# ============================================================================
+# Configuration d'inférence YOLOv8
+# ============================================================================
+# Usage :
+#   python -m module.infer --config module/infer.yaml --image path/vers/image.jpg
+# ============================================================================
+
+# --- Modèle ---
+weights: checkpoints/best.pt
+num_classes: 36
+version: n                         # doit correspondre au modèle entraîné
+image_size: 640                    # même taille que pendant l'entraînement
+device: cpu                       # cuda | cpu | cuda:0
+
+# --- NMS / seuils de détection ---
+conf_threshold: 0.25               # seuil de confiance minimal (plus haut qu'en eval)
+iou_threshold: 0.45                # seuil IoU pour NMS
+
+# --- Noms des classes (facultatif) ---
+# Si laissé null, les classes seront affichées comme "class_0", "class_1", etc.
+# Pour COCO, décommenter la liste complète ci-dessous.
+# class_names: null
+class_names:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - A
+  - B
+  - C
+  - D
+  - E
+  - F
+  - G
+  - H
+  - I
+  - J
+  - K
+  - L
+  - M
+  - N
+  - O
+  - P
+  - Q
+  - R
+  - S
+  - T
+  - U
+  - V
+  - W
+  - X
+  - Y
+  - Z
+
+
+# --- Rendu ---
+line_thickness: 2
+font_scale: 0.5
+save_path: null                    # ex: "output.jpg" pour sauvegarder l'image annotée
+show: true                         # false pour désactiver cv2.imshow (utile en serveur headless)

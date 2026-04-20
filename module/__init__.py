@@ -5,8 +5,8 @@ from .lossfn import ComputeLoss
 from .dataset import YOLODataset
 from .metrics import MetricAccumulator, non_max_suppression
 from .config import (
-    TrainConfig, EvalConfig,
-    load_train_config, load_eval_config,
+    TrainConfig, EvalConfig, InferConfig,
+    load_train_config, load_eval_config, load_infer_config,
 )
 
 __all__ = [
@@ -17,6 +17,8 @@ __all__ = [
     'non_max_suppression',
     'TrainConfig',
     'EvalConfig',
+    'InferConfig',
     'load_train_config',
     'load_eval_config',
+    'load_infer_config',
 ]

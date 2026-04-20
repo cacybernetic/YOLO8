@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Best model saving.
 - Gradient accumulation step.
 - Progress bar on training, validation and evaluation.
+- Model inference on image file.
  
 
 ### Changed 
