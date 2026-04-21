@@ -92,6 +92,32 @@ class InferConfig:
     show: bool = True                         # affiche avec cv2.imshow
 
 
+@dataclass
+class ExportConfig:
+    # Modèle
+    weights: str                              # chemin du checkpoint (.pt) à convertir
+    num_classes: int
+    version: str = 'n'
+    image_size: int = 640
+
+    # Sortie
+    output_path: str = 'weights/best.onnx'
+
+    # Options d'export ONNX
+    opset: int = 17                           # version d'opset ONNX (17 = bon défaut moderne)
+    dynamic: bool = True                      # batch size dynamique
+    simplify: bool = True                     # simplifier le graphe avec onnxsim (si installé)
+    half: bool = False                        # export FP16 (utile GPU / mobile)
+
+    # Validation post-export
+    check: bool = True                        # vérifie le modèle ONNX avec onnx.checker
+    verify: bool = True                       # compare sortie PyTorch vs ONNX Runtime (si installé)
+    verify_tolerance: float = 1e-3            # tolérance max sur l'écart absolu
+
+    # Divers
+    device: str = 'cpu'                       # 'cpu' recommandé pour l'export, plus stable
+
+
 def _load_yaml(path):
     path = Path(path)
     if not path.exists():
@@ -129,3 +155,13 @@ def load_infer_config(path) -> InferConfig:
         print(f"[config] Clés ignorées: {sorted(unknown)}")
     data = {k: v for k, v in data.items() if k in fields}
     return InferConfig(**data)
+
+
+def load_export_config(path) -> ExportConfig:
+    data = _load_yaml(path)
+    fields = {f for f in ExportConfig.__dataclass_fields__}
+    unknown = set(data.keys()) - fields
+    if unknown:
+        print(f"[config] Clés ignorées: {sorted(unknown)}")
+    data = {k: v for k, v in data.items() if k in fields}
+    return ExportConfig(**data)

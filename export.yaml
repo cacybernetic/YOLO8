@@ -1,0 +1,33 @@
+# ============================================================================
+# Configuration d'export ONNX
+# ============================================================================
+# Usage :
+#   python -m module.export --config module/export.yaml
+#
+# Dépendances optionnelles :
+#   pip install onnx onnxsim onnxruntime
+#   pip install onnxconverter-common   (si half=true)
+# ============================================================================
+
+# --- Modèle (doit matcher le modèle entraîné) ---
+weights: checkpoints/best.pt
+num_classes: 80
+version: n                   # 'n' | 's' | 'm' | 'l' | 'x'
+image_size: 640
+
+# --- Sortie ---
+output_path: weights/best.onnx
+
+# --- Options ONNX ---
+opset: 17                    # 12 minimum, 17 recommandé (moderne)
+dynamic: true                # batch size dynamique (recommandé)
+simplify: true               # simplifie le graphe avec onnxsim
+half: false                  # conversion FP16 (utile GPU / mobile, à valider sur la cible)
+
+# --- Validation post-export ---
+check: true                  # vérifie le graphe avec onnx.checker
+verify: true                 # compare sortie PyTorch vs ONNXRuntime
+verify_tolerance: 0.001      # tolérance max sur l'écart absolu
+
+# --- Divers ---
+device: cpu                  # cpu recommandé pour l'export (plus stable et portable)

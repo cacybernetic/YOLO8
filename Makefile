@@ -4,8 +4,8 @@ install:
 	uv pip install -r requirements.txt
 
 gpu_install:
-	.venv/bin/python3 --version
-	uv -m pip install -r requirements.txt
+	.venv/bin/python --version
+	uv pip install -r requirements.txt
 
 dev_install:
 	uv pip install -e .

@@ -10,6 +10,11 @@ torchinfo==1.8.0
 torch==2.8.0
 torchvision==0.23.0
 
+onnx==1.21.0
+onnxruntime==1.23.2
+onnxsim==0.6.2
+onnxconverter-common==1.16.0
+
 python-dotenv==1.0.0
 pytest==8.2
 setuptools>=42
