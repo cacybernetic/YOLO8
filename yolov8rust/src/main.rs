@@ -12,11 +12,12 @@
 //! edition = "2021"
 //!
 //! [dependencies]
-//! anyhow  = "1"
-//! clap    = { version = "4", features = ["derive"] }
-//! image   = "0.25"
-//! ndarray = "0.16"
-//! ort     = { version = "2", features = ["download-binaries"] }
+//! anyhow   = "1"
+//! clap     = { version = "4", features = ["derive"] }
+//! font8x8  = "0.3"
+//! image    = "0.25"
+//! ndarray  = "0.16"
+//! ort      = { version = "2", features = ["download-binaries"] }
 //! ```
 //!
 //! ## Usage
@@ -42,6 +43,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use font8x8::UnicodeFonts;
 use image::{DynamicImage, GenericImageView, Rgb, RgbImage};
 use ndarray::{Array4, ArrayViewD};
 use ort::{session::Session, value::Tensor as OrtTensor};
@@ -157,7 +159,7 @@ fn letterbox(img: &DynamicImage, target_size: u32) -> LetterboxResult {
     // Ratio unique pour les deux axes (on prend le plus petit pour tout faire
     // rentrer sans débordement)
     let ratio = (target_size as f32 / orig_w as f32)
-        .min(target_size as f32 / orig_h as f32);
+    .min(target_size as f32 / orig_h as f32);
 
     let new_w = (orig_w as f32 * ratio).round() as u32;
     let new_h = (orig_h as f32 * ratio).round() as u32;
@@ -170,8 +172,8 @@ fn letterbox(img: &DynamicImage, target_size: u32) -> LetterboxResult {
 
     // Redimensionnement de qualité Lanczos (proche d'OpenCV INTER_LINEAR)
     let resized = img
-        .resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3)
-        .to_rgb8();
+    .resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3)
+    .to_rgb8();
 
     // Canvas gris
     let mut canvas = RgbImage::from_pixel(target_size, target_size, Rgb([114, 114, 114]));
@@ -207,7 +209,7 @@ fn image_to_tensor(img: &RgbImage) -> Array4<f32> {
 
     // Shape [1, 3, H, W]
     Array4::from_shape_vec((1, 3, h, w), data)
-        .expect("Impossible de créer le tenseur d'entrée")
+    .expect("Impossible de créer le tenseur d'entrée")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -270,7 +272,7 @@ fn non_max_suppression(
     if shape[1] < 4 + nc {
         bail!(
             "Dimension 1 du tenseur ({}) < 4 + nc ({})",
-            shape[1], 4 + nc
+              shape[1], 4 + nc
         );
     }
 
@@ -351,7 +353,7 @@ fn scale_boxes_to_original(
     detections: &mut [Detection],
     ratio: f32,
     pad: (u32, u32),
-    orig_size: (u32, u32), // (orig_w, orig_h)
+                           orig_size: (u32, u32), // (orig_w, orig_h)
 ) {
     let pad_l = pad.0 as f32;
     let pad_t = pad.1 as f32;
@@ -411,24 +413,85 @@ fn draw_rect(
     let y2 = y2.min(ih.saturating_sub(1));
 
     for t in 0..thickness {
-        // Bord supérieur
-        hline(img, x1, x2, y1.saturating_add(t),       color);
-        // Bord inférieur
-        hline(img, x1, x2, y2.saturating_sub(t),       color);
-        // Bord gauche
-        vline(img, x1.saturating_add(t), y1, y2,       color);
-        // Bord droit
-        vline(img, x2.saturating_sub(t), y1, y2,       color);
+        hline(img, x1, x2, y1.saturating_add(t),  color);
+        hline(img, x1, x2, y2.saturating_sub(t),  color);
+        vline(img, x1.saturating_add(t), y1, y2,  color);
+        vline(img, x2.saturating_sub(t), y1, y2,  color);
     }
 }
 
-/// Dessine les boites de détection sur une copie de l'image et la retourne.
+/// Dessine un rectangle plein (fond opaque).
+fn fill_rect(img: &mut RgbImage, x1: u32, y1: u32, x2: u32, y2: u32, color: Rgb<u8>) {
+    let (iw, ih) = img.dimensions();
+    let x2 = x2.min(iw.saturating_sub(1));
+    let y2 = y2.min(ih.saturating_sub(1));
+    for y in y1..=y2 {
+        for x in x1..=x2 {
+            img.put_pixel(x, y, color);
+        }
+    }
+}
+
+/// Dessine `text` en pixels à partir de `(ox, oy)` avec la police bitmap 8×8
+/// de `font8x8`.  `scale` multiplie chaque pixel (1 = 8px haut, 2 = 16px…).
+///
+/// Retourne la largeur totale rendue en pixels.
+fn draw_text_bitmap(
+    img:   &mut RgbImage,
+    text:  &str,
+    ox:    u32,
+    oy:    u32,
+    scale: u32,
+    color: Rgb<u8>,
+) -> u32 {
+    let (iw, ih) = img.dimensions();
+    let mut cursor_x = ox;
+
+    for ch in text.chars() {
+        // font8x8 fournit les glyphes ASCII de base
+        let glyph: [u8; 8] = font8x8::BASIC_FONTS
+        .get(ch)
+        .unwrap_or_else(|| font8x8::BASIC_FONTS.get('?').unwrap());
+
+        // Chaque entrée est un tableau de 8 lignes ; chaque bit = 1 colonne
+        for (row, bits) in glyph.iter().enumerate() {
+            for col in 0u32..8 {
+                if bits & (1 << col) != 0 {
+                    for sy in 0..scale {
+                        for sx in 0..scale {
+                            let px = cursor_x + col * scale + sx;
+                            let py = oy + row as u32 * scale + sy;
+                            if px < iw && py < ih {
+                                img.put_pixel(px, py, color);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cursor_x += 8 * scale;
+    }
+    cursor_x - ox // largeur totale en pixels
+}
+
+/// Dessine les boites + étiquettes sur une copie de l'image et la retourne.
+///
+/// Chaque boite reçoit :
+///   - un contour coloré (2 px) avec repères de coin en L
+///   - un bandeau de fond plein au-dessus, de la couleur de la classe
+///   - le nom de classe + score de confiance en texte bitmap blanc
 fn annotate_image(
-    orig:       &DynamicImage,
-    detections: &[Detection],
+    orig:        &DynamicImage,
+    detections:  &[Detection],
     class_names: &[&str],
 ) -> RgbImage {
     let mut rgb = orig.to_rgb8();
+
+    // Échelle du texte : 1 = 8×8 px natif, 2 = 16×16 px (plus lisible)
+    let scale: u32 = 2;
+    let char_w = 8 * scale;
+    let char_h = 8 * scale;
+    let pad    = 2u32; // marge interne du bandeau
 
     for det in detections {
         let x1 = det.x1.max(0.0) as u32;
@@ -436,32 +499,57 @@ fn annotate_image(
         let x2 = det.x2.max(0.0) as u32;
         let y2 = det.y2.max(0.0) as u32;
 
-        // Couleur de la classe
         let color = class_color(det.class_id);
 
-        // Boite principale (épaisseur 2 px)
+        // ── Boite principale ─────────────────────────────────────────────────
         draw_rect(&mut rgb, x1, y1, x2, y2, color, 2);
 
-        // Petits repères de coin en L (style "futuriste" comme dans infer.py)
-        let w = (x2 - x1) as f32;
-        let h = (y2 - y1) as f32;
-        let cl = (w.min(h) * 0.18).max(6.0) as u32; // longueur du coin
+        // Repères de coin en L
+        let w = (x2.saturating_sub(x1)) as f32;
+        let h = (y2.saturating_sub(y1)) as f32;
+        let cl = (w.min(h) * 0.18).max(6.0) as u32;
 
-        // Top-left
         hline(&mut rgb, x1, x1 + cl, y1, color);
         vline(&mut rgb, x1, y1, y1 + cl, color);
-        // Top-right
         hline(&mut rgb, x2.saturating_sub(cl), x2, y1, color);
         vline(&mut rgb, x2, y1, y1 + cl, color);
-        // Bottom-left
         hline(&mut rgb, x1, x1 + cl, y2, color);
         vline(&mut rgb, x1, y2.saturating_sub(cl), y2, color);
-        // Bottom-right
         hline(&mut rgb, x2.saturating_sub(cl), x2, y2, color);
         vline(&mut rgb, x2, y2.saturating_sub(cl), y2, color);
 
-        // Log du label dans stdout (pas de rendu texte sans police vectorielle)
-        let _ = (class_names, det); // déjà loggé dans main
+        // ── Étiquette ────────────────────────────────────────────────────────
+        let cls_name = if det.class_id < class_names.len() {
+            class_names[det.class_id].to_owned()
+        } else {
+            format!("class_{}", det.class_id)
+        };
+        let label = format!("{} {:.2}", cls_name, det.confidence);
+
+        let label_w = label.chars().count() as u32 * char_w + pad * 2;
+        let label_h = char_h + pad * 2;
+
+        // Le bandeau se place au-dessus de la boite ; s'il déborde en haut,
+        // on le place à l'intérieur (juste sous le bord supérieur).
+        let (band_y1, band_y2, text_y) = if y1 >= label_h {
+            let by1 = y1 - label_h;
+            (by1, y1, by1 + pad)
+        } else {
+            (y1, y1 + label_h, y1 + pad)
+        };
+
+        // Fond coloré du bandeau
+        fill_rect(&mut rgb, x1, band_y1, x1 + label_w, band_y2, color);
+
+        // Texte blanc par-dessus
+        draw_text_bitmap(
+            &mut rgb,
+            &label,
+            x1 + pad,
+            text_y,
+            scale,
+            Rgb([255, 255, 255]),
+        );
     }
 
     rgb
@@ -476,11 +564,11 @@ fn main() -> Result<()> {
 
     // ── 1. Chargement de l'image ──────────────────────────────────────────────
     let orig_img = image::open(&args.image)
-        .with_context(|| format!("Impossible d'ouvrir l'image : {}", args.image.display()))?;
+    .with_context(|| format!("Impossible d'ouvrir l'image : {}", args.image.display()))?;
     let (orig_w, orig_h) = orig_img.dimensions();
     println!(
         "[image]  {} ({}×{})",
-        args.image.display(), orig_w, orig_h
+             args.image.display(), orig_w, orig_h
     );
 
     // ── 2. Pré-traitement ─────────────────────────────────────────────────────
@@ -491,9 +579,9 @@ fn main() -> Result<()> {
 
     // ── 3. Session ONNX Runtime ───────────────────────────────────────────────
     let mut session = Session::builder()
-        .context("Impossible de créer le builder ONNX Runtime")?
-        .commit_from_file(&args.model)
-        .with_context(|| format!("Impossible de charger le modèle : {}", args.model.display()))?;
+    .context("Impossible de créer le builder ONNX Runtime")?
+    .commit_from_file(&args.model)
+    .with_context(|| format!("Impossible de charger le modèle : {}", args.model.display()))?;
 
     // Affichage des entrées/sorties du graphe (utile pour le débogage)
     // En rc.12, `Outlet` expose name() et aucun champ public de type
@@ -510,22 +598,22 @@ fn main() -> Result<()> {
     let s = args.size as usize;
     let flat_data: Vec<f32> = tensor.iter().copied().collect();
     let ort_input = OrtTensor::from_array(([1_usize, 3, s, s], flat_data))
-        .context("Impossible de créer le tenseur d'entrée ORT")?;
+    .context("Impossible de créer le tenseur d'entrée ORT")?;
 
     let outputs = session
-        .run(ort::inputs!["images" => ort_input])
-        .context("Erreur lors du forward ONNX")?;
+    .run(ort::inputs!["images" => ort_input])
+    .context("Erreur lors du forward ONNX")?;
 
     // rc.12 : try_extract_tensor::<T>() retourne Result<(&Shape, &[T])>
     // où Shape = SmallVec<[i64; N]>.  On reconstruit la vue ndarray
     // manuellement.  Le closure utilise `*d` pour désambiguïser le type
     // (évite E0282 sur le pattern `|&d|`).
     let (out_shape, out_data) = outputs["output"]
-        .try_extract_tensor::<f32>()
-        .context("Impossible d'extraire la sortie ONNX en f32")?;
+    .try_extract_tensor::<f32>()
+    .context("Impossible d'extraire la sortie ONNX en f32")?;
     let dims: Vec<usize> = out_shape.iter().map(|d| *d as usize).collect();
     let output_view = ndarray::ArrayViewD::from_shape(ndarray::IxDyn(&dims), out_data)
-        .context("Impossible de construire la vue ndarray depuis la sortie ONNX")?;
+    .context("Impossible de construire la vue ndarray depuis la sortie ONNX")?;
 
     println!(
         "[infer]  sortie shape : {:?}",
@@ -542,17 +630,17 @@ fn main() -> Result<()> {
 
     println!(
         "[nms]    {} candidat(s) → {} détection(s) (conf≥{:.2}, iou≤{:.2})",
-        output_view.shape()[2],
-        detections.len(),
-        args.conf,
-        args.iou,
+             output_view.shape()[2],
+             detections.len(),
+             args.conf,
+             args.iou,
     );
 
     // ── 6. Reprojection vers l'image d'origine ────────────────────────────────
     scale_boxes_to_original(&mut detections, lb.ratio, lb.pad, (orig_w, orig_h));
 
     // ── 7. Affichage console ──────────────────────────────────────────────────
-    let class_names: &[&str] = if args.nc == 80 {
+    let class_names: &[&str] = if args.nc == COCO_CLASSES.len() {
         COCO_CLASSES
     } else {
         &[] // noms génériques (class_N) si nc ≠ 80
@@ -566,8 +654,8 @@ fn main() -> Result<()> {
         };
         println!(
             "  [{i:>3}]  {name:<20}  conf={:.4}  \
-             x1={:.1}  y1={:.1}  x2={:.1}  y2={:.1}",
-            det.confidence, det.x1, det.y1, det.x2, det.y2
+x1={:.1}  y1={:.1}  x2={:.1}  y2={:.1}",
+det.confidence, det.x1, det.y1, det.x2, det.y2
         );
     }
 
@@ -575,8 +663,8 @@ fn main() -> Result<()> {
     if let Some(out_path) = &args.output {
         let annotated = annotate_image(&orig_img, &detections, class_names);
         annotated
-            .save(out_path)
-            .with_context(|| format!("Impossible de sauvegarder : {}", out_path.display()))?;
+        .save(out_path)
+        .with_context(|| format!("Impossible de sauvegarder : {}", out_path.display()))?;
         println!("[save]   image annotée → {}", out_path.display());
     } else {
         println!("[save]   aucun chemin de sortie fourni (--output)");
