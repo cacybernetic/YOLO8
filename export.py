@@ -31,6 +31,7 @@ import torch.nn as nn
 
 from module.config import ExportConfig, load_export_config
 from module.model import MyYolo
+from module.utils import print_model_summary
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +261,8 @@ def run_export(cfg: ExportConfig):
 
     # 1) Modèle
     model = load_model(cfg, device)
+    print_model_summary(model, input_size=(1, 3, cfg.image_size, cfg.image_size),
+                        device=device)
     wrapper = YoloExportWrapper(model).to(device).eval()
 
     # 2) Entrée factice

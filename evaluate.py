@@ -16,6 +16,7 @@ from module.config import load_eval_config, EvalConfig
 from module.dataset import YOLODataset
 from module.metrics import MetricAccumulator, non_max_suppression
 from module.model import MyYolo
+from module.utils import print_model_summary
 from train import build_val_targets
 
 
@@ -54,6 +55,8 @@ def evaluate(cfg: EvalConfig):
     if unexpected:
         print(f"[weights] unexpected keys: {len(unexpected)}")
     print(f"[weights] Chargé: {weights_path}")
+    print_model_summary(model, input_size=(1, 3, cfg.image_size, cfg.image_size),
+                        device=device)
 
     model.eval()
     accumulator = MetricAccumulator(device=device)

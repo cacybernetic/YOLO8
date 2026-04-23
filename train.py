@@ -27,6 +27,7 @@ from module.dataset import YOLODataset
 from module.lossfn import ComputeLoss
 from module.metrics import MetricAccumulator, non_max_suppression
 from module.model import MyYolo
+from module.utils import print_model_summary
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +440,8 @@ def main():
     model.head.stride = model.head.stride.to(device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"[model] YOLOv8-{cfg.version} | {n_params:.3f}M params | strides={model.head.stride.tolist()}")
+    print_model_summary(model, input_size=(1, 3, cfg.image_size, cfg.image_size),
+                        device=device)
 
     # --- Loss ---
     loss_params = {'box': cfg.box_gain, 'cls': cfg.cls_gain, 'dfl': cfg.dfl_gain}
