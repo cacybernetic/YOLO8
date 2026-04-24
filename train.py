@@ -582,8 +582,11 @@ def main():
     model.head.stride = model.head.stride.to(device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"[model] YOLOv8-{cfg.version} | {n_params:.3f}M params | strides={model.head.stride.tolist()}")
-    print_model_summary(model, input_size=(1, 3, cfg.image_size, cfg.image_size),
-                        device=device)
+    # NOTE: le résumé du modèle est imprimé plus loin, APRÈS le chargement des
+    # poids et le freeze éventuel. À ce stade, la colonne "Trainable" de
+    # torchinfo et le total des params entraînables reflètent alors l'état réel
+    # du modèle tel qu'il sera entraîné. Afficher le résumé ici produirait des
+    # chiffres de "trainable" trompeurs en cas de freeze_feature_layers=true.
 
     # --- Loss ---
     loss_params = {'box': cfg.box_gain, 'cls': cfg.cls_gain, 'dfl': cfg.dfl_gain}
@@ -667,6 +670,18 @@ def main():
               f"(freeze_feature_layers actif, groupes de params incompatibles)")
 
     best_path = ckpt_dir / 'best.pt'
+
+    # --- Résumé final du modèle ---
+    # Affiché en dernier, APRÈS chargement des poids et freeze éventuel.
+    # À ce stade, `requires_grad` reflète l'état réel de chaque paramètre,
+    # donc la colonne "Trainable" de torchinfo et le total des params
+    # entraînables sont cohérents avec ce qui sera réellement optimisé.
+    print("\n" + "=" * 80)
+    print(f"Résumé du modèle (mode de démarrage: {startup_mode}, "
+          f"freeze={cfg.freeze_feature_layers})")
+    print("=" * 80)
+    print_model_summary(model, input_size=(1, 3, cfg.image_size, cfg.image_size),
+                        device=device)
 
     # --- Training loop ---
     if cfg.grad_accumulation_steps > 1:

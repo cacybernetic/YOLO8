@@ -33,7 +33,12 @@ def print_model_summary(model: nn.Module,
         _print_native_summary(model)
         return
 
-    was_training = model.training
+    # On sauvegarde l'état training/eval de CHAQUE sous-module avant de tout
+    # basculer en eval() pour le forward de torchinfo. Sans cela, un simple
+    # model.train() final remettrait en mode train les couches qu'on veut
+    # garder en eval (ex: BatchNorm figées par freeze_feature_layers).
+    training_states = {name: m.training for name, m in model.named_modules()}
+
     model.eval()
     try:
         summary(
@@ -52,8 +57,10 @@ def print_model_summary(model: nn.Module,
         print("[summary] Fallback sur le résumé natif.")
         _print_native_summary(model)
     finally:
-        if was_training:
-            model.train()
+        # Restauration fidèle de l'état train/eval de chaque sous-module
+        for name, m in model.named_modules():
+            if name in training_states:
+                m.training = training_states[name]
 
 
 def _print_native_summary(model: nn.Module):
