@@ -1,0 +1,39 @@
+# ============================================================================
+# Configuration de construction d'un modèle fine-tunable
+# ============================================================================
+# Usage :
+#   python -m module.finetuning --config module/finetune.yaml
+#
+# Ce script ne fait PAS l'entraînement : il construit un nouveau checkpoint
+# adapté au nouveau nombre de classes, en réutilisant les poids du backbone,
+# neck et têtes `box` du modèle source. Seules les têtes `cls` (dépendantes
+# de num_classes) sont réinitialisées.
+#
+# Après exécution, utilisez train.yaml avec:
+#   resume: <chemin vers output_weights>
+#   num_classes: <new_num_classes>
+#   freeze_feature_layers: true   # recommandé pour les petits datasets
+# ============================================================================
+
+# --- Modèle source ---
+pretrained_weights: checkpoints/best.pt    # checkpoint .pt pré-entraîné
+old_num_classes: 80                         # nombre de classes du modèle source
+new_num_classes: 10                         # nouveau nombre de classes
+version: n                                  # DOIT matcher le modèle source
+image_size: 640
+
+# --- Sortie ---
+output_weights: weights/ft_model.pt   # chemin du nouveau checkpoint
+
+# --- Initialisation ---
+# Prior probabilistique pour le biais des nouvelles têtes de classification.
+# La valeur 0.01 est la convention de Focal Loss / RetinaNet / YOLOX.
+# Le biais initial sera b = -log((1-π)/π) ≈ -4.595 pour chaque classe.
+cls_prior: 0.01
+
+# Vérification stricte du chargement backbone+neck.
+# À laisser à true sauf cas particulier (diagnostic d'erreur).
+strict_backbone_load: true
+
+# --- Divers ---
+device: cpu                                 # cpu recommandé pour cette étape

@@ -39,7 +39,23 @@ augment_params:
 
 # --- Modèle ---
 version: n           # 'n' | 's' | 'm' | 'l' | 'x'
-resume: null         # chemin d'un checkpoint à reprendre (ex: checkpoints/epoch_0010.pt)
+
+# Trois modes de démarrage possibles, mutuellement exclusifs (priorité: resume > pretrained_weights > auto_resume):
+#
+#   resume:               reprend un entraînement interrompu (poids + optimizer + epoch + best_metric)
+#                         Utilisez ce mode pour continuer EXACTEMENT là où on s'est arrêté.
+#
+#   pretrained_weights:   démarre un NOUVEL entraînement avec des poids initiaux personnalisés.
+#                         Utilisez ce mode pour:
+#                           - entraîner un modèle fine-tunable (sortie de finetuning.py)
+#                           - démarrer depuis un checkpoint pré-entraîné sur un autre dataset
+#                         Charge UNIQUEMENT les poids (pas l'optimizer, pas l'epoch → repart à 0).
+#
+#   auto_resume: true     (par défaut) cherche le dernier epoch_*.pt dans checkpoint_dir et reprend.
+#
+resume: null
+pretrained_weights: null        # ex: weights/finetune_init.pt (produit par finetuning.py)
+freeze_feature_layers: false    # true: gèle backbone + neck, n'entraîne que la tête (fine-tuning)
 
 # --- Optimisation ---
 epochs: 100
