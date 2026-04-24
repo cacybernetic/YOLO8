@@ -23,7 +23,9 @@ class TrainConfig:
 
     # Modèle
     version: str = 'n'        # 'n', 's', 'm', 'l', 'x'
-    resume: Optional[str] = None  # chemin d'un checkpoint à reprendre
+    resume: Optional[str] = None  # chemin d'un checkpoint à reprendre (poids + optimizer + epoch)
+    pretrained_weights: Optional[str] = None  # chemin de poids initiaux (poids seulement, epoch=0)
+    freeze_feature_layers: bool = False   # gèle backbone + neck (fine-tuning seulement tête)
 
     # Optimisation
     epochs: int = 100
@@ -118,6 +120,37 @@ class ExportConfig:
     device: str = 'cpu'                       # 'cpu' recommandé pour l'export, plus stable
 
 
+@dataclass
+class FinetuneConfig:
+    """Configuration pour la construction d'un modèle fine-tunable.
+
+    Le fine-tuning YOLOv8 s'appuie sur trois principes (cf. littérature transfer learning
+    et pratiques Ultralytics):
+      - Le backbone et le neck extraient des features génériques, réutilisables
+        sur de nouvelles classes. On les conserve tels quels.
+      - Les branches de régression de boites (`box`) et le DFL produisent
+        des coordonnées géométriques, indépendantes du nombre de classes.
+      - Seules les branches de classification (`cls`) dépendent de num_classes
+        et doivent être réinitialisées avec la nouvelle taille de sortie.
+    """
+    # Modèle source
+    pretrained_weights: str              # chemin du .pt pré-entraîné
+    old_num_classes: int                 # nombre de classes du modèle source
+    new_num_classes: int                 # nombre de classes du modèle cible
+    version: str = 'n'                   # doit matcher celui du modèle source
+    image_size: int = 640
+
+    # Sortie
+    output_weights: str = 'weights/finetune_init.pt'
+
+    # Options d'initialisation
+    cls_prior: float = 0.01              # prior pour l'init du biais cls (cf. Focal Loss)
+    strict_backbone_load: bool = True    # exige que backbone+neck chargent sans clé manquante
+
+    # Divers
+    device: str = 'cpu'
+
+
 def _load_yaml(path):
     path = Path(path)
     if not path.exists():
@@ -165,3 +198,13 @@ def load_export_config(path) -> ExportConfig:
         print(f"[config] Clés ignorées: {sorted(unknown)}")
     data = {k: v for k, v in data.items() if k in fields}
     return ExportConfig(**data)
+
+
+def load_finetune_config(path) -> FinetuneConfig:
+    data = _load_yaml(path)
+    fields = {f for f in FinetuneConfig.__dataclass_fields__}
+    unknown = set(data.keys()) - fields
+    if unknown:
+        print(f"[config] Clés ignorées: {sorted(unknown)}")
+    data = {k: v for k, v in data.items() if k in fields}
+    return FinetuneConfig(**data)

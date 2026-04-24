@@ -1,12 +1,13 @@
 """YOLOv8 from scratch - module d'entraînement et d'évaluation."""
 
-from module.model import MyYolo
-from module.lossfn import ComputeLoss
-from module.dataset import YOLODataset
-from module.metrics import MetricAccumulator, non_max_suppression
-from module.config import (
-    TrainConfig, EvalConfig, InferConfig, ExportConfig,
-    load_train_config, load_eval_config, load_infer_config, load_export_config,
+from .model import MyYolo
+from .lossfn import ComputeLoss
+from .dataset import YOLODataset
+from .metrics import MetricAccumulator, non_max_suppression
+from .config import (
+    TrainConfig, EvalConfig, InferConfig, ExportConfig, FinetuneConfig,
+    load_train_config, load_eval_config, load_infer_config,
+    load_export_config, load_finetune_config,
 )
 
 __all__ = [
@@ -19,8 +20,10 @@ __all__ = [
     'EvalConfig',
     'InferConfig',
     'ExportConfig',
+    'FinetuneConfig',
     'load_train_config',
     'load_eval_config',
     'load_infer_config',
     'load_export_config',
+    'load_finetune_config',
 ]

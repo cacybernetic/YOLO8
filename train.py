@@ -104,6 +104,53 @@ def build_optimizer(model, lr, momentum, weight_decay):
     ], lr=lr, momentum=momentum, nesterov=True)
 
 
+def freeze_feature_layers(model):
+    """Gèle le backbone et le neck du modèle pour un fine-tuning de la tête seule.
+
+    Principe académique:
+      Lorsque le dataset cible est petit ou ressemble fortement à celui du
+      pré-entraînement, on peut figer les couches d'extraction de
+      caractéristiques (backbone + neck) et n'entraîner que la tête de
+      détection. Cela :
+        - Réduit drastiquement le nombre de paramètres optimisés (moins de
+          risque de sur-apprentissage sur un petit dataset).
+        - Préserve les features génériques apprises sur le pré-entraînement.
+        - Accélère l'entraînement (pas de backprop dans backbone+neck).
+
+    Implémentation:
+      On met requires_grad=False sur tous les paramètres de backbone et neck.
+      Les modules BatchNorm contenus dedans sont aussi mis en mode eval() pour
+      figer leurs statistiques running_mean/running_var — sinon, même avec
+      requires_grad=False sur leurs poids, les statistiques seraient encore
+      mises à jour durant le forward (comportement non désiré au fine-tuning).
+    """
+    n_frozen_params = 0
+    for name, param in model.named_parameters():
+        if name.startswith('backbone.') or name.startswith('neck.'):
+            param.requires_grad = False
+            n_frozen_params += param.numel()
+
+    # Figer aussi les statistiques de BatchNorm
+    # Note: cela ne désactive pas l'ajout de dropout hypothétique, mais notre
+    # modèle n'en contient pas ; seule BatchNorm a un état interne.
+    n_bn_frozen = 0
+    for mod_name, module in model.named_modules():
+        if not (mod_name.startswith('backbone.') or mod_name.startswith('neck.')):
+            continue
+        if isinstance(module, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d,
+                               torch.nn.BatchNorm3d)):
+            module.eval()
+            n_bn_frozen += 1
+
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"[freeze] Backbone + Neck gelés: {n_frozen_params/1e6:.3f}M params "
+          f"figés, {n_bn_frozen} couches BN mises en eval()")
+    print(f"[freeze] Paramètres entraînables: {trainable/1e6:.3f}M / "
+          f"{total/1e6:.3f}M  ({100*trainable/total:.1f}%)")
+    return n_frozen_params
+
+
 # ---------------------------------------------------------------------------
 # Checkpointing
 # ---------------------------------------------------------------------------
@@ -241,6 +288,79 @@ def load_checkpoint_if_any(path, model, optimizer=None, device='cpu'):
     return epoch_start, best_metric
 
 
+def load_pretrained_weights(path, model, device='cpu'):
+    """Charge UNIQUEMENT les poids depuis un fichier (pas l'optimizer ni l'epoch).
+
+    Différence fondamentale avec `load_checkpoint_if_any` :
+      - `load_checkpoint_if_any` est pour REPRENDRE un entraînement interrompu :
+        elle restaure l'optimizer, le scheduler implicite (via epoch_start) et
+        le best_metric. L'entraînement continue comme si on n'avait jamais arrêté.
+      - `load_pretrained_weights` est pour DÉMARRER un nouvel entraînement avec
+        des poids pré-existants : on charge uniquement le state_dict du modèle,
+        on repart de epoch=0 avec un optimizer frais et un best_metric vierge.
+
+    Ce mode est utile pour:
+      - Fine-tuning : charger un modèle issu de finetuning.py dont les têtes cls
+        ont été ré-initialisées. On veut un nouvel apprentissage, pas une reprise.
+      - Transfer learning : charger un modèle entraîné sur un autre dataset.
+      - Initialisation à chaud : démarrer depuis un modèle de référence pour
+        bénéficier de bonnes features initiales.
+
+    Args:
+        path: chemin du fichier .pt
+        model: modèle cible
+        device: device pour map_location
+
+    Returns:
+        True si les poids ont été chargés, False sinon.
+    """
+    if not path:
+        return False
+
+    weights_path = Path(path)
+    if not weights_path.exists():
+        raise FileNotFoundError(
+            f"[pretrained] Fichier de poids pré-entraînés introuvable: {path}"
+        )
+
+    # Même gestion weights_only que pour les checkpoints complets.
+    try:
+        ckpt = torch.load(weights_path, map_location=device, weights_only=False)
+    except TypeError:
+        ckpt = torch.load(weights_path, map_location=device)
+
+    # Accepte aussi bien un checkpoint complet qu'un state_dict nu.
+    if isinstance(ckpt, dict) and 'model' in ckpt:
+        state = ckpt['model']
+    else:
+        state = ckpt
+
+    try:
+        model.load_state_dict(state)
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"[pretrained] Les poids ne correspondent pas au modèle courant. "
+            f"Vérifiez que `version` et `num_classes` dans train.yaml matchent "
+            f"ceux utilisés pour produire '{path}'.\n  Détail: {e}"
+        ) from e
+
+    # Message informatif avec l'origine si disponible (cas d'un checkpoint
+    # produit par finetuning.py qui stocke la provenance).
+    origin = ""
+    if isinstance(ckpt, dict):
+        src = ckpt.get('finetune_origin')
+        old_nc = ckpt.get('finetune_old_num_classes')
+        new_nc = ckpt.get('finetune_new_num_classes')
+        if src is not None:
+            origin = (f" (fine-tune: {old_nc} -> {new_nc} classes, "
+                      f"source: {Path(src).name})")
+
+    print(f"[pretrained] Poids chargés depuis '{path}'{origin}")
+    print(f"[pretrained] Démarrage d'un nouvel entraînement "
+          f"(epoch=0, optimizer fresh, best_metric=-inf)")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Une epoch d'entraînement
 # ---------------------------------------------------------------------------
@@ -248,8 +368,30 @@ def load_checkpoint_if_any(path, model, optimizer=None, device='cpu'):
 def train_one_epoch(model, loader, loss_fn, optimizer, scheduler,
                     epoch, total_epochs, num_steps_per_epoch,
                     device, grad_clip, log_interval,
-                    grad_accumulation_steps=1):
+                    grad_accumulation_steps=1,
+                    freeze_feature_layers=False):
+    """Exécute une epoch d'entraînement.
+
+    Args:
+        freeze_feature_layers: si True, après `model.train()`, on remet
+            explicitement les BatchNorm de backbone+neck en mode eval. C'est
+            nécessaire car `model.train()` propage train() à tous les
+            sous-modules, ce qui réactiverait la mise à jour des statistiques
+            running_mean/running_var dans les couches gelées.
+    """
     model.train()
+
+    # Si freeze actif, on remet les BN du backbone+neck en eval() pour figer
+    # leurs statistiques running_mean/running_var. Sans cela, les stats
+    # seraient mises à jour à chaque forward même si les poids sont gelés.
+    if freeze_feature_layers:
+        for mod_name, module in model.named_modules():
+            if not (mod_name.startswith('backbone.') or mod_name.startswith('neck.')):
+                continue
+            if isinstance(module, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d,
+                                   torch.nn.BatchNorm3d)):
+                module.eval()
+
     running = {'box': 0.0, 'cls': 0.0, 'dfl': 0.0, 'total': 0.0, 'n': 0}
     t0 = time.time()
 
@@ -447,7 +589,58 @@ def main():
     loss_params = {'box': cfg.box_gain, 'cls': cfg.cls_gain, 'dfl': cfg.dfl_gain}
     loss_fn = ComputeLoss(model, loss_params)
 
-    # --- Optim ---
+    # --- Stratégie de démarrage ---
+    # Trois modes possibles, évalués dans cet ordre de priorité:
+    #
+    #   MODE 1 (resume): si cfg.resume est renseigné et existe, ou si
+    #     auto_resume trouve un epoch_*.pt dans checkpoint_dir, on REPREND
+    #     l'entraînement (poids + optimizer + epoch + best_metric).
+    #
+    #   MODE 2 (pretrained_weights): si cfg.pretrained_weights est renseigné,
+    #     on DÉMARRE UN NOUVEL ENTRAÎNEMENT en chargeant uniquement les poids.
+    #     L'optimizer est frais, on repart de epoch=0. Cas d'usage principal:
+    #     démarrer un fine-tuning depuis le .pt produit par finetuning.py.
+    #
+    #   MODE 3 (from scratch): aucun des deux ci-dessus → initialisation
+    #     aléatoire du modèle.
+    #
+    # Le MODE 1 a la priorité sur le MODE 2 car si on a à la fois un checkpoint
+    # de reprise disponible ET des poids pré-entraînés, on veut reprendre le
+    # dernier entraînement en cours, pas redémarrer depuis la source.
+    ckpt_dir = Path(cfg.checkpoint_dir)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    resume_path = resolve_resume_path(cfg)
+
+    startup_mode = None  # 'resume' | 'pretrained' | 'scratch'
+    epoch_start = 0
+    best_metric = -float('inf')
+
+    if resume_path is not None:
+        # MODE 1: reprise complète
+        startup_mode = 'resume'
+        epoch_start, best_metric = load_checkpoint_if_any(
+            resume_path, model, optimizer=None, device=device
+        )
+    elif cfg.pretrained_weights:
+        # MODE 2: démarrage avec poids initiaux (fine-tune ou transfer learning)
+        startup_mode = 'pretrained'
+        load_pretrained_weights(cfg.pretrained_weights, model, device=device)
+        # epoch_start=0, best_metric=-inf (déjà initialisés ci-dessus)
+    else:
+        # MODE 3: from scratch
+        startup_mode = 'scratch'
+        print(f"[startup] Aucun poids initial fourni. Entraînement from scratch.")
+
+    # --- Freeze (optionnel) — doit être avant build_optimizer ---
+    # Rationale: un paramètre gelé (requires_grad=False) est ignoré par
+    # build_optimizer, qui ne créera donc pas d'états d'optimisation inutiles
+    # pour backbone/neck. Cela économise de la mémoire et garantit qu'aucune
+    # mise à jour n'est appliquée, même en cas de bug.
+    if cfg.freeze_feature_layers:
+        freeze_feature_layers(model)
+
+    # --- Optim (après freeze pour n'enregistrer que les params entraînables) ---
     optimizer = build_optimizer(model, lr=cfg.max_lr,
                                 momentum=cfg.momentum,
                                 weight_decay=cfg.weight_decay)
@@ -455,14 +648,23 @@ def main():
                                 cfg.warmup_epochs, cfg.epochs,
                                 num_steps_per_epoch)
 
-    # --- Resume ---
-    ckpt_dir = Path(cfg.checkpoint_dir)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-
-    resume_path = resolve_resume_path(cfg)
-    epoch_start, best_metric = load_checkpoint_if_any(
-        resume_path, model, optimizer, device=device
-    )
+    # Chargement différé de l'état de l'optimizer UNIQUEMENT en mode resume.
+    # En mode pretrained_weights ou scratch, on démarre avec un optimizer frais
+    # même si le fichier source contenait un état d'optimizer.
+    # En mode freeze, les param_groups sont différents (moins de paramètres),
+    # donc l'état de l'optimizer stocké devient incompatible et doit être ignoré.
+    if startup_mode == 'resume' and not cfg.freeze_feature_layers:
+        try:
+            ckpt = torch.load(resume_path, map_location=device, weights_only=False)
+            if isinstance(ckpt, dict) and 'optimizer' in ckpt:
+                optimizer.load_state_dict(ckpt['optimizer'])
+                print(f"[resume] État de l'optimizer restauré")
+        except Exception as e:
+            print(f"[resume] Impossible de restaurer l'optimizer ({e}). "
+                  f"Poursuite avec un optimizer fresh.")
+    elif startup_mode == 'resume' and cfg.freeze_feature_layers:
+        print(f"[resume] État de l'optimizer IGNORÉ "
+              f"(freeze_feature_layers actif, groupes de params incompatibles)")
 
     best_path = ckpt_dir / 'best.pt'
 
@@ -479,6 +681,7 @@ def main():
             epoch, cfg.epochs, num_steps_per_epoch,
             device, cfg.grad_clip, cfg.log_interval,
             grad_accumulation_steps=cfg.grad_accumulation_steps,
+            freeze_feature_layers=cfg.freeze_feature_layers,
         )
 
         val_metrics = {}
