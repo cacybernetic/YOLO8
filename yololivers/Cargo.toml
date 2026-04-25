@@ -1,0 +1,21 @@
+[package]
+name = "yololivers"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Erreur ergonomique
+anyhow = "1.0"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Capture vidéo et affichage (alternative pure-Rust à OpenCV)
+rustcv = "*"   # pin-version selon ce qui est dispo sur crates.io
+
+# ONNX Runtime via le binding Rust officiel pyke/ort
+# Note: cette dépendance télécharge la lib ONNX Runtime à la première compilation
+ort = { version = "2.0.0-rc.10", features = ["download-binaries"] }
+
+# Tenseurs n-dimensionnels (utilisé par ort pour les inputs/outputs)
+ndarray = "0.17.2"
