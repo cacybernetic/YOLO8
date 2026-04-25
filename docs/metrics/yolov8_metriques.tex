@@ -1,0 +1,1378 @@
+\documentclass[12pt, a4paper]{report}
+
+% ── Encodage & langue ──────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[francais]{babel}
+
+% ── Mise en page ───────────────────────────────────────────────────────────────
+\usepackage[top=2.5cm, bottom=2.5cm, left=3cm, right=2.5cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+
+% ── Typographie ────────────────────────────────────────────────────────────────
+\usepackage{ae}
+
+% ── Mathématiques ──────────────────────────────────────────────────────────────
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mathtools}
+
+% ── Tableaux ───────────────────────────────────────────────────────────────────
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{colortbl}
+\usepackage{tabularx}
+\usepackage{longtable}
+
+% ── Graphiques & figures ───────────────────────────────────────────────────────
+\usepackage{graphicx}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, calc, fit, backgrounds}
+
+% ── Listings (code) ────────────────────────────────────────────────────────────
+\usepackage{listings}
+\usepackage{lstautogobble}
+
+% ── En-têtes / pieds de page ───────────────────────────────────────────────────
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textit{Métriques YOLOv8}}
+\fancyhead[R]{\small\textit{\leftmark}}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Hyperliens ─────────────────────────────────────────────────────────────────
+\usepackage[hidelinks, colorlinks=false]{hyperref}
+\usepackage{cleveref}
+
+% ── Boîtes colorées ────────────────────────────────────────────────────────────
+\usepackage[most]{tcolorbox}
+\tcbuselibrary{breakable, skins}
+
+% ── Couleurs personnalisées ────────────────────────────────────────────────────
+\definecolor{yoloblue}{RGB}{0, 82, 165}
+\definecolor{yoloorange}{RGB}{230, 100, 20}
+\definecolor{yologreen}{RGB}{34, 139, 34}
+\definecolor{yolored}{RGB}{180, 30, 30}
+\definecolor{lightgray}{RGB}{245, 245, 245}
+\definecolor{lightblue}{RGB}{230, 241, 255}
+\definecolor{lightorange}{RGB}{255, 243, 224}
+\definecolor{lightgreen}{RGB}{230, 255, 230}
+\definecolor{lightred}{RGB}{255, 230, 230}
+
+% ── Environnements tcolorbox ───────────────────────────────────────────────────
+\newtcolorbox{definitionbox}[1]{
+  colback=lightblue, colframe=yoloblue, fonttitle=\bfseries,
+  title={#1}, breakable, arc=4pt
+}
+\newtcolorbox{formulebox}[1]{
+  colback=lightorange, colframe=yoloorange, fonttitle=\bfseries,
+  title={#1}, breakable, arc=4pt
+}
+\newtcolorbox{examplebox}[1]{
+  colback=lightgreen, colframe=yologreen, fonttitle=\bfseries,
+  title={#1}, breakable, arc=4pt
+}
+\newtcolorbox{warningbox}[1]{
+  colback=lightred, colframe=yolored, fonttitle=\bfseries,
+  title={#1}, breakable, arc=4pt
+}
+\newtcolorbox{notebox}{
+  colback=lightgray, colframe=gray!60, fonttitle=\bfseries,
+  title={Note}, breakable, arc=4pt
+}
+
+% ── Style listings Python ──────────────────────────────────────────────────────
+\lstdefinestyle{python}{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{yoloblue}\bfseries,
+  commentstyle=\color{gray}\itshape,
+  stringstyle=\color{yologreen},
+  numberstyle=\tiny\color{gray},
+  numbers=left,
+  stepnumber=1,
+  showstringspaces=false,
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{gray!40},
+  backgroundcolor=\color{lightgray},
+  autogobble=true
+}
+
+% ── Commandes utilitaires ──────────────────────────────────────────────────────
+\newcommand{\mAP}{\text{mAP}}
+\newcommand{\IoU}{\text{IoU}}
+\newcommand{\tp}{\text{TP}}
+\newcommand{\fp}{\text{FP}}
+\newcommand{\fn}{\text{FN}}
+\newcommand{\tn}{\text{TN}}
+
+% ──────────────────────────────────────────────────────────────────────────────
+%  DOCUMENT
+% ──────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+% ════════════════════════════════════════════════════════════════════════════════
+%  PAGE DE TITRE
+% ════════════════════════════════════════════════════════════════════════════════
+\begin{titlepage}
+  \centering
+  \vspace*{1cm}
+
+  {\color{yoloblue}\rule{\linewidth}{2pt}}
+  \vspace{0.5cm}
+
+  {\Huge\bfseries\color{yoloblue}
+    Métriques de Précision et d'Erreur\\[0.4cm]
+    du Modèle \textcolor{yoloorange}{YOLOv8}
+  }
+
+  \vspace{0.4cm}
+  {\color{yoloblue}\rule{\linewidth}{2pt}}
+  \vspace{1.5cm}
+
+  {\Large\textit{Détection et Reconnaissance d'Objets}}
+
+  \vspace{1cm}
+
+  \begin{tcolorbox}[colback=lightblue, colframe=yoloblue, width=0.85\linewidth,
+    arc=6pt, boxrule=1pt]
+    \centering
+    \textbf{Référence exhaustive} — Définitions, formules, calculs détaillés\\
+    et exemples numériques sur des données réelles
+  \end{tcolorbox}
+
+  \vspace{2cm}
+
+  % Schéma pipeline simplifié
+  \begin{tikzpicture}[node distance=1.4cm, >=Stealth,
+    box/.style={rectangle, rounded corners=4pt, draw=yoloblue,
+                fill=lightblue, minimum width=2.4cm, minimum height=0.9cm,
+                font=\small\bfseries, text=yoloblue}]
+    \node[box] (img)   {Image};
+    \node[box, right=of img]  (yolo)  {YOLOv8};
+    \node[box, right=of yolo] (det)   {Détections};
+    \node[box, right=of det]  (eval)  {Évaluation};
+    \node[box, right=of eval] (met)   {Métriques};
+    \draw[->] (img)  -- (yolo);
+    \draw[->] (yolo) -- (det);
+    \draw[->] (det)  -- (eval);
+    \draw[->] (eval) -- (met);
+  \end{tikzpicture}
+
+  \vfill
+
+  {\large\today}
+\end{titlepage}
+
+% ════════════════════════════════════════════════════════════════════════════════
+%  TABLE DES MATIÈRES
+% ════════════════════════════════════════════════════════════════════════════════
+\tableofcontents
+\newpage
+
+% ════════════════════════════════════════════════════════════════════════════════
+%  INTRODUCTION
+% ════════════════════════════════════════════════════════════════════════════════
+\chapter{Introduction}
+
+\section{Contexte et objectifs}
+
+YOLOv8 (\textit{You Only Look Once version 8}), développé par Ultralytics, est
+l'une des architectures les plus performantes pour la \textbf{détection et la
+reconnaissance d'objets} en temps réel. Évaluer correctement un tel modèle
+requiert de maîtriser un ensemble de métriques couvrant quatre dimensions
+complémentaires :
+
+\begin{itemize}
+  \item \textbf{Précision de la classification} : le modèle attribue-t-il la
+        bonne étiquette ?
+  \item \textbf{Qualité de la localisation} : la boîte englobante est-elle bien
+        positionnée ?
+  \item \textbf{Erreurs d'entraînement} : les fonctions de perte convergent-elles
+        correctement ?
+  \item \textbf{Performance opérationnelle} : le modèle peut-il tourner en temps
+        réel ?
+\end{itemize}
+
+\section{Notions fondamentales : TP, FP, FN, TN}
+
+\begin{definitionbox}{Définitions de base}
+  Soit une image contenant des objets réels (Ground Truth, GT).
+  Le modèle produit des \textbf{prédictions}. On compare chaque prédiction au GT
+  via un seuil d'IoU (typiquement 0{,}50) :
+  \begin{itemize}
+    \item \textbf{TP (True Positive)} : la prédiction correspond à un objet réel
+          et la classe est correcte, \textit{et} $\IoU \geq \text{seuil}$.
+    \item \textbf{FP (False Positive)} : la prédiction ne correspond à aucun objet
+          réel, ou la classe est incorrecte.
+    \item \textbf{FN (False Negative)} : un objet réel n'a pas été détecté.
+    \item \textbf{TN (True Negative)} : zone sans objet, non détectée (rarement
+          utilisé en détection).
+  \end{itemize}
+\end{definitionbox}
+
+\begin{examplebox}{Exemple illustratif — 5 images, classe ``voiture''}
+  \begin{center}
+  \begin{tabular}{lccccc}
+    \toprule
+    \textbf{Image} & \textbf{GT réels} & \textbf{Détections} & \textbf{TP} & \textbf{FP} & \textbf{FN} \\
+    \midrule
+    Img-1 & 2 & 2 & 2 & 0 & 0 \\
+    Img-2 & 3 & 4 & 3 & 1 & 0 \\
+    Img-3 & 1 & 0 & 0 & 0 & 1 \\
+    Img-4 & 2 & 2 & 1 & 1 & 1 \\
+    Img-5 & 0 & 1 & 0 & 1 & 0 \\
+    \midrule
+    \textbf{Total} & \textbf{8} & \textbf{9} & \textbf{6} & \textbf{3} & \textbf{2} \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{examplebox}
+
+Les données de cet exemple ($\tp=6$, $\fp=3$, $\fn=2$) seront réutilisées dans
+tout le document.
+
+% ════════════════════════════════════════════════════════════════════════════════
+%  CHAPITRE 1 — MÉTRIQUES DE PRÉCISION
+% ════════════════════════════════════════════════════════════════════════════════
+\chapter{Métriques de Précision et de Rappel}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Precision (P)}
+
+\begin{definitionbox}{Définition}
+  La \textbf{Precision} mesure la proportion de détections correctes parmi
+  \emph{toutes} les détections émises par le modèle. Elle répond à la question :
+  \og Quand le modèle dit qu'il a trouvé un objet, a-t-il raison ? \fg
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  \[
+    P = \frac{\tp}{\tp + \fp}
+  \]
+  \begin{itemize}
+    \item $\tp$ : nombre de vraies détections correctes
+    \item $\fp$ : nombre de fausses alarmes (détections erronées)
+  \end{itemize}
+\end{formulebox}
+
+\textbf{Interprétation :}
+\begin{itemize}
+  \item $P = 1{,}0$ : toutes les détections sont correctes, aucune fausse alarme.
+  \item $P = 0{,}5$ : une détection sur deux est fausse.
+  \item Une précision faible est dangereuse dans des systèmes de surveillance
+        (trop d'alertes inutiles).
+\end{itemize}
+
+\begin{examplebox}{Calcul numérique}
+  En reprenant les données du tableau ($\tp=6$, $\fp=3$) :
+  \[
+    P = \frac{6}{6 + 3} = \frac{6}{9} \approx \mathbf{0{,}667}
+  \]
+  \textit{Interprétation :} $66{,}7\,\%$ des détections émises par le modèle
+  correspondent effectivement à des voitures réelles.
+\end{examplebox}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Recall (R) — Rappel}
+
+\begin{definitionbox}{Définition}
+  Le \textbf{Recall} mesure la proportion d'objets réels effectivement détectés
+  parmi tous ceux présents dans les images. Il répond à la question :
+  \og Le modèle manque-t-il des objets ? \fg
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  \[
+    R = \frac{\tp}{\tp + \fn}
+  \]
+  \begin{itemize}
+    \item $\fn$ : objets réels non détectés
+  \end{itemize}
+\end{formulebox}
+
+\textbf{Interprétation :}
+\begin{itemize}
+  \item $R = 1{,}0$ : aucun objet n'a été manqué.
+  \item $R = 0{,}5$ : la moitié des objets n'est pas détectée.
+  \item Un rappel faible est critique dans des applications médicales ou de
+        sécurité (un objet manqué peut avoir de graves conséquences).
+\end{itemize}
+
+\begin{examplebox}{Calcul numérique}
+  Avec $\tp=6$ et $\fn=2$ :
+  \[
+    R = \frac{6}{6 + 2} = \frac{6}{8} = \mathbf{0{,}75}
+  \]
+  \textit{Interprétation :} le modèle détecte $75\,\%$ des voitures réellement
+  présentes dans les images.
+\end{examplebox}
+
+\begin{warningbox}{Compromis Precision / Recall}
+  Il existe un \textbf{trade-off fondamental} : augmenter le seuil de confiance
+  améliore la Precision (moins de fausses alarmes) mais réduit le Recall (plus
+  d'objets manqués), et vice-versa. Le F1-Score et la courbe PR permettent
+  d'analyser ce compromis.
+\end{warningbox}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{F1-Score}
+
+\begin{definitionbox}{Définition}
+  Le \textbf{F1-Score} est la moyenne harmonique de la Precision et du Recall.
+  Il fournit un indicateur unique équilibrant les deux métriques précédentes.
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  \[
+    F1 = 2 \times \frac{P \times R}{P + R}
+  \]
+  \textit{Équivalent développé :}
+  \[
+    F1 = \frac{2\,\tp}{2\,\tp + \fp + \fn}
+  \]
+\end{formulebox}
+
+\textbf{Pourquoi la moyenne harmonique ?}
+
+La moyenne arithmétique $(P+R)/2$ peut donner un score élevé même si l'une des
+deux métriques est très faible. Par exemple, si $P=1{,}0$ et $R=0{,}1$ :
+\[
+  \text{Moy. arith.} = \frac{1{,}0 + 0{,}1}{2} = 0{,}55 \quad \text{vs} \quad
+  F1 = \frac{2 \times 1{,}0 \times 0{,}1}{1{,}0 + 0{,}1} \approx 0{,}18
+\]
+La moyenne harmonique pénalise fortement les déséquilibres.
+
+\begin{examplebox}{Calcul numérique}
+  Avec $P = 0{,}667$ et $R = 0{,}75$ :
+  \[
+    F1 = 2 \times \frac{0{,}667 \times 0{,}75}{0{,}667 + 0{,}75}
+       = 2 \times \frac{0{,}500}{1{,}417} \approx \mathbf{0{,}706}
+  \]
+  \textit{Vérification directe :}
+  $F1 = \frac{2 \times 6}{2 \times 6 + 3 + 2} = \frac{12}{17} \approx 0{,}706$ \checkmark
+\end{examplebox}
+
+\textbf{Utilisation en YOLOv8 :} la courbe F1-Confidence permet de sélectionner
+le seuil de confiance optimal (celui qui maximise le F1-Score sur les données de
+validation).
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{AP — Average Precision}
+
+\begin{definitionbox}{Définition}
+  L'\textbf{Average Precision} est l'aire sous la courbe Precision-Recall (PR).
+  Elle synthétise la performance du modèle sur une \emph{classe donnée} sur
+  \emph{tous les seuils de confiance possibles}.
+\end{definitionbox}
+
+\begin{formulebox}{Formule (interpolation 11 points)}
+  \[
+    AP = \frac{1}{11} \sum_{r \in \{0,\,0.1,\,\ldots,\,1.0\}} P_{\text{interp}}(r)
+  \]
+  où $P_{\text{interp}}(r) = \max_{\tilde{r} \geq r} P(\tilde{r})$
+
+  \textit{Ou, en intégrale continue (COCO) :}
+  \[
+    AP = \int_0^1 P(R)\, dR
+  \]
+\end{formulebox}
+
+\subsection{Construction de la courbe PR}
+
+\begin{enumerate}
+  \item Trier toutes les détections par score de confiance décroissant.
+  \item Pour chaque seuil de confiance $c_i$, calculer $P(c_i)$ et $R(c_i)$.
+  \item Tracer la courbe $P = f(R)$.
+  \item Calculer l'aire sous cette courbe.
+\end{enumerate}
+
+\begin{examplebox}{Calcul détaillé de l'AP}
+
+  Supposons 10 détections triées par confiance décroissante pour la classe
+  ``voiture'' (GT total = 5 objets). ``1'' = TP, ``0'' = FP :
+
+  \vspace{0.3cm}
+  \begin{center}
+  \begin{tabular}{ccccc}
+    \toprule
+    \textbf{Rang} & \textbf{Conf.} & \textbf{TP/FP} & \textbf{Precision} & \textbf{Recall} \\
+    \midrule
+    1 & 0.95 & 1 & 1/1 = 1.000 & 1/5 = 0.200 \\
+    2 & 0.90 & 1 & 2/2 = 1.000 & 2/5 = 0.400 \\
+    3 & 0.85 & 0 & 2/3 = 0.667 & 2/5 = 0.400 \\
+    4 & 0.80 & 1 & 3/4 = 0.750 & 3/5 = 0.600 \\
+    5 & 0.75 & 0 & 3/5 = 0.600 & 3/5 = 0.600 \\
+    6 & 0.70 & 1 & 4/6 = 0.667 & 4/5 = 0.800 \\
+    7 & 0.65 & 0 & 4/7 = 0.571 & 4/5 = 0.800 \\
+    8 & 0.60 & 1 & 5/8 = 0.625 & 5/5 = 1.000 \\
+    9 & 0.50 & 0 & 5/9 = 0.556 & 5/5 = 1.000 \\
+    10 & 0.40 & 0 & 5/10 = 0.500 & 5/5 = 1.000 \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+
+  Après interpolation (valeur max de $P$ pour $R \geq r$) aux 11 points :
+  \[
+    AP = \frac{1}{11}(1{,}0 + 1{,}0 + 1{,}0 + 0{,}75 + 0{,}75 + 0{,}667 +
+         0{,}625 + 0{,}625 + 0 + 0 + 0)
+       \approx \mathbf{0{,}584}
+  \]
+\end{examplebox}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{mAP50 — mean Average Precision @ IoU=0.50}
+
+\begin{definitionbox}{Définition}
+  Le \textbf{mAP50} est la moyenne des AP de toutes les classes, calculée avec
+  un seuil IoU fixé à $0{,}50$. C'est la \textbf{métrique principale} affichée
+  par YOLOv8 lors de l'évaluation.
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  \[
+    \mAP_{50} = \frac{1}{N} \sum_{i=1}^{N} AP_i^{(\IoU=0.50)}
+  \]
+  où $N$ est le nombre de classes.
+\end{formulebox}
+
+\begin{examplebox}{Calcul numérique — 4 classes}
+  \begin{center}
+  \begin{tabular}{lcc}
+    \toprule
+    \textbf{Classe} & \textbf{AP\textsubscript{50}} & \textbf{Observations} \\
+    \midrule
+    Voiture    & 0.892 & Classe bien représentée \\
+    Piéton     & 0.741 & Petits objets, plus difficile \\
+    Vélo       & 0.654 & Souvent occulté \\
+    Camion     & 0.813 & Grands objets, bien détectés \\
+    \midrule
+    \textbf{mAP50} & $\mathbf{0.775}$ & $(0.892+0.741+0.654+0.813)/4$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \textit{Interprétation :} le modèle obtient en moyenne $77{,}5\,\%$ de précision
+  sur les 4 classes avec un seuil de recoupement de 50\,\%.
+\end{examplebox}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{mAP50-95 — mean Average Precision @ IoU=0.50:0.95}
+
+\begin{definitionbox}{Définition}
+  Le \textbf{mAP50-95} est la moyenne des mAP calculés sur 10 seuils IoU
+  distincts : $\{0.50,\, 0.55,\, 0.60,\, \ldots,\, 0.95\}$. C'est la métrique
+  standard du challenge \textbf{COCO}, la plus exigeante.
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  \[
+    \mAP_{50:95} = \frac{1}{10} \sum_{t \in \{0.50,\,0.55,\,\ldots,\,0.95\}}
+    \mAP_t
+  \]
+\end{formulebox}
+
+\begin{examplebox}{Calcul numérique}
+  \begin{center}
+  \begin{tabular}{cc}
+    \toprule
+    \textbf{Seuil IoU} & \textbf{mAP\textsubscript{t}} \\
+    \midrule
+    0.50 & 0.775 \\
+    0.55 & 0.742 \\
+    0.60 & 0.708 \\
+    0.65 & 0.671 \\
+    0.70 & 0.623 \\
+    0.75 & 0.561 \\
+    0.80 & 0.489 \\
+    0.85 & 0.401 \\
+    0.90 & 0.283 \\
+    0.95 & 0.112 \\
+    \midrule
+    \textbf{mAP50-95} & $\mathbf{0.537}$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  La chute des valeurs montre que le modèle se dégrade significativement quand
+  on exige une localisation plus précise (IoU $\geq 0{,}75$).
+\end{examplebox}
+
+\begin{warningbox}{mAP50 vs mAP50-95}
+  Un modèle peut afficher un excellent mAP50 ($\sim\!0{,}90$) mais un mAP50-95
+  médiocre ($\sim\!0{,}45$), indiquant que les boîtes englobantes sont imprécises.
+  Pour des applications critiques (robotique, véhicules autonomes), le mAP50-95
+  est la métrique pertinente.
+\end{warningbox}
+
+% ════════════════════════════════════════════════════════════════════════════════
+%  CHAPITRE 2 — MÉTRIQUES DE LOCALISATION
+% ════════════════════════════════════════════════════════════════════════════════
+\chapter{Métriques de Localisation — Bounding Box}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{IoU — Intersection over Union}
+
+\begin{definitionbox}{Définition}
+  L'\textbf{IoU} mesure le taux de recoupement entre la boîte prédite
+  $B_{\text{pred}}$ et la boîte réelle $B_{\text{gt}}$. C'est la base de toutes
+  les métriques de localisation.
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  \[
+    \IoU = \frac{\left|B_{\text{pred}} \cap B_{\text{gt}}\right|}
+                {\left|B_{\text{pred}} \cup B_{\text{gt}}\right|}
+  \]
+  \textit{Développé :}
+  \[
+    \IoU = \frac{\text{Aire d'intersection}}
+                {\text{Aire}(B_{\text{pred}}) + \text{Aire}(B_{\text{gt}}) - \text{Aire d'intersection}}
+  \]
+\end{formulebox}
+
+\textbf{Calcul de l'intersection :}
+
+Soient $B_{\text{pred}} = (x_1^p, y_1^p, x_2^p, y_2^p)$ et
+$B_{\text{gt}} = (x_1^g, y_1^g, x_2^g, y_2^g)$ en coordonnées
+coin-supérieur-gauche / coin-inférieur-droit.
+
+\[
+  x_{\text{inter},1} = \max(x_1^p, x_1^g), \quad
+  x_{\text{inter},2} = \min(x_2^p, x_2^g)
+\]
+\[
+  y_{\text{inter},1} = \max(y_1^p, y_1^g), \quad
+  y_{\text{inter},2} = \min(y_2^p, y_2^g)
+\]
+\[
+  \text{Aire}_{\text{inter}} =
+    \max(0,\; x_{\text{inter},2} - x_{\text{inter},1}) \times
+    \max(0,\; y_{\text{inter},2} - y_{\text{inter},1})
+\]
+
+\begin{examplebox}{Calcul numérique}
+  \begin{itemize}
+    \item $B_{\text{pred}} = (100,\,150,\,250,\,350)$ — Aire $= 150 \times 200 = 30\,000$
+    \item $B_{\text{gt}} = (120,\,160,\,270,\,370)$ — Aire $= 150 \times 210 = 31\,500$
+  \end{itemize}
+
+  Intersection :
+  \[
+    x_1 = \max(100,120)=120,\; x_2 = \min(250,270)=250 \;\Rightarrow\; \Delta x = 130
+  \]
+  \[
+    y_1 = \max(150,160)=160,\; y_2 = \min(350,370)=350 \;\Rightarrow\; \Delta y = 190
+  \]
+  \[
+    \text{Aire}_{\text{inter}} = 130 \times 190 = 24\,700
+  \]
+  Union :
+  \[
+    \text{Aire}_{\text{union}} = 30\,000 + 31\,500 - 24\,700 = 36\,800
+  \]
+  \[
+    \IoU = \frac{24\,700}{36\,800} \approx \mathbf{0{,}671}
+  \]
+  La boîte prédite chevauche $67{,}1\,\%$ de la boîte réelle.
+  Avec un seuil de $0{,}50$, cette détection est comptée comme \textbf{TP}.
+\end{examplebox}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{GIoU — Generalized IoU}
+
+\begin{definitionbox}{Définition}
+  Le \textbf{GIoU} étend l'IoU en pénalisant la distance entre les boîtes
+  lorsqu'elles \emph{ne se chevauchent pas}, résolvant le problème des gradients
+  nuls de l'IoU standard.
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  \[
+    \text{GIoU} = \IoU - \frac{|C \setminus (B_{\text{pred}} \cup B_{\text{gt}})|}{|C|}
+  \]
+  où $C$ est la \textbf{plus petite boîte englobante convexe} contenant
+  $B_{\text{pred}}$ et $B_{\text{gt}}$.
+\end{formulebox}
+
+\textbf{Propriétés :}
+\[
+  -1 \leq \text{GIoU} \leq 1
+\]
+\begin{itemize}
+  \item $\text{GIoU} = 1$ : correspondance parfaite.
+  \item $\text{GIoU} \to -1$ : boîtes très éloignées.
+  \item $\text{GIoU} = \IoU$ si les boîtes se chevauchent entièrement.
+\end{itemize}
+
+\begin{examplebox}{Calcul numérique — boîtes sans chevauchement}
+  \begin{itemize}
+    \item $B_{\text{pred}} = (0,\,0,\,100,\,100)$ — Aire = $10\,000$
+    \item $B_{\text{gt}} = (150,\,150,\,250,\,250)$ — Aire = $10\,000$
+    \item $\text{Intersection} = 0$ (aucun chevauchement)
+    \item $\IoU = 0$
+    \item Boîte $C = (0,\,0,\,250,\,250)$ — Aire$(C) = 62\,500$
+    \item Aire$(C) -$ Aire$(\text{union}) = 62\,500 - 20\,000 = 42\,500$
+  \end{itemize}
+  \[
+    \text{GIoU} = 0 - \frac{42\,500}{62\,500} = -\mathbf{0{,}68}
+  \]
+  Le GIoU de $-0{,}68$ indique que les boîtes sont très éloignées, ce que
+  l'IoU = 0 ne pouvait pas quantifier.
+\end{examplebox}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{DIoU — Distance IoU}
+
+\begin{definitionbox}{Définition}
+  Le \textbf{DIoU} ajoute une pénalité sur la \textbf{distance entre les centres}
+  des deux boîtes, en plus de l'IoU. Il favorise une convergence plus rapide que
+  le GIoU.
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  \[
+    \text{DIoU} = \IoU - \frac{\rho^2(b,\, b^{gt})}{c^2}
+  \]
+  \begin{itemize}
+    \item $\rho(b, b^{gt})$ : distance euclidienne entre les centres $b$ et
+          $b^{gt}$ des deux boîtes.
+    \item $c$ : longueur de la diagonale de la plus petite boîte englobante $C$.
+  \end{itemize}
+\end{formulebox}
+
+\begin{examplebox}{Calcul numérique}
+  \begin{itemize}
+    \item $B_{\text{pred}} = (50,\,50,\,150,\,150)$
+          $\;\Rightarrow\;$ centre $b = (100, 100)$
+    \item $B_{\text{gt}} = (80,\,80,\,180,\,180)$
+          $\;\Rightarrow\;$ centre $b^{gt} = (130, 130)$
+    \item Intersection : $x_1=80, x_2=150, y_1=80, y_2=150$
+          $\;\Rightarrow\;$ Aire $= 70 \times 70 = 4\,900$
+    \item Aire$_{\text{pred}} = 10\,000$, Aire$_{\text{gt}} = 10\,000$
+    \item Aire$_{\text{union}} = 10\,000 + 10\,000 - 4\,900 = 15\,100$
+    \item $\IoU = 4\,900 / 15\,100 \approx 0{,}3245$
+    \item $\rho^2 = (130-100)^2 + (130-100)^2 = 900 + 900 = 1\,800$
+    \item $C = (50,\,50,\,180,\,180)$
+          $\;\Rightarrow\;$ $c^2 = 130^2 + 130^2 = 33\,800$
+  \end{itemize}
+  \[
+    \text{DIoU} = 0{,}3245 - \frac{1\,800}{33\,800} \approx 0{,}3245 - 0{,}0533 \approx \mathbf{0{,}271}
+  \]
+\end{examplebox}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{CIoU — Complete IoU (Loss par défaut de YOLOv8)}
+
+\begin{definitionbox}{Définition}
+  Le \textbf{CIoU} est la métrique de recoupement la plus complète : il intègre
+  simultanément l'\textbf{IoU}, la \textbf{distance entre centres} et le
+  \textbf{ratio d'aspect} (rapport largeur/hauteur). C'est la fonction de perte
+  de localisation native de YOLOv8.
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  \[
+    \text{CIoU} = \IoU - \frac{\rho^2(b,\, b^{gt})}{c^2} - \alpha v
+  \]
+  où :
+  \[
+    v = \frac{4}{\pi^2} \left(\arctan\frac{w^{gt}}{h^{gt}}
+        - \arctan\frac{w}{h}\right)^2
+  \]
+  \[
+    \alpha = \frac{v}{(1 - \IoU) + v}
+  \]
+  \begin{itemize}
+    \item $v$ : mesure la cohérence du ratio d'aspect entre prédiction et GT.
+    \item $\alpha$ : coefficient de pondération adaptatif.
+    \item $w, h$ : largeur et hauteur de la boîte prédite.
+    \item $w^{gt}, h^{gt}$ : largeur et hauteur de la boîte GT.
+  \end{itemize}
+\end{formulebox}
+
+\begin{examplebox}{Calcul numérique}
+  En reprenant l'exemple précédent et ajoutant les dimensions :
+  \begin{itemize}
+    \item $B_{\text{pred}} : w=100,\; h=100$ (carré)
+    \item $B_{\text{gt}} : w=100,\; h=100$ (carré)
+    \item $\IoU \approx 0{,}3245$, termes DIoU calculés ci-dessus.
+  \end{itemize}
+  \[
+    v = \frac{4}{\pi^2}\left(\arctan\frac{100}{100} - \arctan\frac{100}{100}\right)^2
+      = \frac{4}{\pi^2}(0)^2 = 0
+  \]
+  Les deux boîtes ayant le \emph{même ratio d'aspect}, $v=0$ et donc
+  $\text{CIoU} = \text{DIoU} \approx \mathbf{0{,}271}$.
+
+  \vspace{0.3cm}
+  Cas avec ratio d'aspect différent ($B_{\text{pred}} : w=100, h=150$;
+  $B_{\text{gt}} : w=100, h=100$) :
+  \[
+    v = \frac{4}{\pi^2}\left(\arctan(1) - \arctan\tfrac{2}{3}\right)^2
+      = \frac{4}{\pi^2}(0{,}7854 - 0{,}5880)^2 \approx \frac{4}{9{,}87}(0{,}0390)
+      \approx 0{,}0158
+  \]
+  \[
+    \alpha = \frac{0{,}0158}{(1-0{,}3245)+0{,}0158} = \frac{0{,}0158}{0{,}6913} \approx 0{,}0229
+  \]
+  \[
+    \text{CIoU} \approx 0{,}3245 - 0{,}0533 - 0{,}0229 \times 0{,}0158 \approx \mathbf{0{,}271}
+  \]
+\end{examplebox}
+
+% ════════════════════════════════════════════════════════════════════════════════
+%  CHAPITRE 3 — FONCTIONS DE PERTE
+% ════════════════════════════════════════════════════════════════════════════════
+\chapter{Fonctions de Perte (Loss Functions)}
+
+Les fonctions de perte guident l'optimisation du modèle pendant l'entraînement.
+YOLOv8 dispose de trois pertes distinctes, affichées séparément sur les courbes
+d'apprentissage (train et val).
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Box Loss}
+
+\begin{definitionbox}{Définition}
+  La \textbf{Box Loss} quantifie l'erreur de régression des coordonnées des
+  boîtes englobantes. YOLOv8 utilise la CIoU Loss (ou DFL + CIoU selon la
+  configuration).
+\end{definitionbox}
+
+\begin{formulebox}{Formule (CIoU Loss)}
+  \[
+    \mathcal{L}_{\text{box}} = 1 - \text{CIoU}(B_{\text{pred}},\, B_{\text{gt}})
+  \]
+\end{formulebox}
+
+\textbf{Interprétation des courbes :}
+\begin{itemize}
+  \item $\mathcal{L}_{\text{box}} \to 0$ : les boîtes prédites coïncident
+        parfaitement avec les boîtes réelles.
+  \item Si \texttt{val/box\_loss} $\gg$ \texttt{train/box\_loss} : surapprentissage
+        de la localisation.
+\end{itemize}
+
+\begin{examplebox}{Exemple sur un batch}
+  Soit un batch de 3 détections avec leurs CIoU :
+  \begin{center}
+  \begin{tabular}{cccc}
+    \toprule
+    \textbf{Détection} & \textbf{CIoU} & \textbf{Box Loss} & \textbf{Pondération} \\
+    \midrule
+    Det-1 & 0.85 & $1-0.85=0.15$ & $\times 1.0$ \\
+    Det-2 & 0.60 & $1-0.60=0.40$ & $\times 1.0$ \\
+    Det-3 & 0.30 & $1-0.30=0.70$ & $\times 1.0$ \\
+    \midrule
+    \textbf{Moyenne} & — & $\mathbf{0.417}$ & — \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{examplebox}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Classification Loss (Cls Loss)}
+
+\begin{definitionbox}{Définition}
+  La \textbf{Cls Loss} (ou Classification Loss) mesure l'erreur d'attribution
+  des classes aux objets détectés. YOLOv8 utilise la
+  \textbf{Binary Cross-Entropy (BCE)} avec sigmoid, appliquée de façon
+  indépendante à chaque classe (approche multi-label).
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  Pour chaque classe $c$ et chaque prédiction :
+  \[
+    \mathcal{L}_{\text{cls}} = -\bigl[y_c \log(\hat{p}_c) +
+    (1 - y_c)\log(1 - \hat{p}_c)\bigr]
+  \]
+  \begin{itemize}
+    \item $y_c \in \{0, 1\}$ : label réel (1 si l'objet appartient à la classe $c$)
+    \item $\hat{p}_c \in [0,1]$ : probabilité prédite par le modèle pour la classe $c$
+  \end{itemize}
+\end{formulebox}
+
+\begin{examplebox}{Calcul numérique — 3 classes}
+  Objet de classe ``voiture'' ($y_1=1$) avec probabilités prédites :
+  \begin{center}
+  \begin{tabular}{lcccc}
+    \toprule
+    \textbf{Classe} & $y_c$ & $\hat{p}_c$ & $\mathcal{L}_c$ \\
+    \midrule
+    Voiture  & 1 & 0.85 & $-(1 \times \log 0.85) = 0.163$ \\
+    Piéton   & 0 & 0.10 & $-(1 \times \log 0.90) = 0.105$ \\
+    Vélo     & 0 & 0.05 & $-(1 \times \log 0.95) = 0.051$ \\
+    \midrule
+    \textbf{Total} & — & — & $\mathbf{0.319}$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  La loss est faible car le modèle attribue correctement une haute probabilité à
+  ``voiture'' et de faibles probabilités aux autres classes.
+\end{examplebox}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{DFL Loss — Distribution Focal Loss}
+
+\begin{definitionbox}{Définition}
+  La \textbf{DFL Loss} est une innovation de YOLOv8 : au lieu de prédire
+  directement les coordonnées scalaires des bords des boîtes, le modèle prédit
+  une \textbf{distribution de probabilité} sur un ensemble discret de valeurs
+  possibles. La DFL Loss optimise cette distribution.
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  \[
+    \text{DFL}(S_i,\, S_{i+1}) =
+    -\Bigl[\,(y_{i+1} - y)\,\log(S_i) + (y - y_i)\,\log(S_{i+1})\,\Bigr]
+  \]
+  \begin{itemize}
+    \item $y$ : valeur cible du bord (continue)
+    \item $y_i, y_{i+1}$ : deux valeurs discrètes encadrant $y$
+          (i.e.\ $y_i \leq y < y_{i+1}$)
+    \item $S_i, S_{i+1}$ : probabilités prédites pour $y_i$ et $y_{i+1}$
+          (issues du softmax)
+  \end{itemize}
+\end{formulebox}
+
+\textbf{Intuition :} le modèle apprend que le bord gauche d'une boîte est à
+``environ 45 pixels'', avec une distribution gaussienne centrée sur 45 — plus
+robuste qu'une valeur scalaire précise.
+
+\begin{examplebox}{Calcul numérique}
+  Supposons $y = 45{,}3$ (position cible d'un bord), $y_i = 45$, $y_{i+1} = 46$,
+  et le modèle prédit $S_{45} = 0{,}72$ et $S_{46} = 0{,}28$ :
+  \[
+    \text{DFL} = -\bigl[(46-45{,}3)\log(0{,}72) + (45{,}3-45)\log(0{,}28)\bigr]
+  \]
+  \[
+    = -\bigl[0{,}7 \times (-0{,}3285) + 0{,}3 \times (-1{,}2730)\bigr]
+  \]
+  \[
+    = -\bigl[-0{,}2300 - 0{,}3819\bigr] = \mathbf{0{,}612}
+  \]
+  Si le modèle était parfait ($S_{45}=0{,}7$, $S_{46}=0{,}3$) :
+  \[
+    \text{DFL} = -\bigl[0{,}7 \times \log(0{,}7) + 0{,}3 \times \log(0{,}3)\bigr]
+               \approx -\bigl[-0{,}2490 - 0{,}3612\bigr] = 0{,}610
+  \]
+\end{examplebox}
+
+\begin{notebox}
+  La DFL Loss est combinée à la CIoU Loss dans la Box Loss totale de YOLOv8 :
+  $\mathcal{L}_{\text{box}} = \lambda_{\text{CIoU}} \cdot \mathcal{L}_{\text{CIoU}}
+  + \lambda_{\text{DFL}} \cdot \mathcal{L}_{\text{DFL}}$
+\end{notebox}
+
+% ════════════════════════════════════════════════════════════════════════════════
+%  CHAPITRE 4 — MÉTRIQUES OPÉRATIONNELLES
+% ════════════════════════════════════════════════════════════════════════════════
+\chapter{Métriques Opérationnelles}
+
+\section{FPS — Frames Per Second}
+
+\begin{definitionbox}{Définition}
+  Les \textbf{FPS} mesurent le nombre d'images traitées par seconde. Indicateur
+  clé pour les applications temps réel.
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  \[
+    \text{FPS} = \frac{1}{\text{Latence (s)}} = \frac{\text{Nombre d'images}}{\text{Temps total (s)}}
+  \]
+\end{formulebox}
+
+\begin{examplebox}{Comparaison des modèles YOLOv8}
+  \begin{center}
+  \begin{tabular}{lcccc}
+    \toprule
+    \textbf{Modèle} & \textbf{Latence (ms)} & \textbf{FPS} & \textbf{mAP50} & \textbf{Params} \\
+    \midrule
+    YOLOv8n & 1.47 & 680 & 37.3 & 3.2M \\
+    YOLOv8s & 2.66 & 376 & 44.9 & 11.2M \\
+    YOLOv8m & 5.86 & 171 & 50.2 & 25.9M \\
+    YOLOv8l & 9.06 & 110 & 52.9 & 43.7M \\
+    YOLOv8x & 14.37 & 70  & 53.9 & 68.2M \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \textit{Source : Ultralytics benchmark, GPU Tesla T4, image 640$\times$640.}
+\end{examplebox}
+
+\section{GFLOPs — Giga Floating Point Operations}
+
+\begin{definitionbox}{Définition}
+  Les \textbf{GFLOPs} mesurent la complexité computationnelle d'une passe avant
+  (forward pass) du modèle. Indicateur de la charge de calcul requise.
+\end{definitionbox}
+
+\begin{formulebox}{Formule approximative (couche convolutive)}
+  \[
+    \text{FLOPs}_{\text{conv}} =
+      2 \times C_{\text{in}} \times C_{\text{out}} \times K_w \times K_h \times H_{\text{out}} \times W_{\text{out}}
+  \]
+  Le facteur 2 représente une multiplication et une addition.
+\end{formulebox}
+
+\begin{examplebox}{Exemple de calcul sur une couche}
+  Couche convolutive : $C_{\text{in}}=64$, $C_{\text{out}}=128$, $K=3\times3$,
+  sortie $H_{\text{out}} \times W_{\text{out}} = 80\times80$ :
+  \[
+    \text{FLOPs} = 2 \times 64 \times 128 \times 3 \times 3 \times 80 \times 80
+                = 2 \times 64 \times 128 \times 9 \times 6400
+                \approx 943\,\text{M FLOPs} = 0{,}94\;\text{GFLOPs}
+  \]
+\end{examplebox}
+
+\section{Paramètres du modèle (Params)}
+
+\begin{definitionbox}{Définition}
+  Le nombre de \textbf{paramètres} (poids) détermine la capacité d'apprentissage
+  du modèle et son empreinte mémoire.
+\end{definitionbox}
+
+\begin{formulebox}{Formule (couche convolutive)}
+  \[
+    \text{Params}_{\text{conv}} = C_{\text{out}} \times (C_{\text{in}} \times K_w \times K_h + 1)
+  \]
+  Le $+1$ représente le biais.
+\end{formulebox}
+
+\begin{examplebox}{Calcul}
+  Pour la couche de l'exemple précédent :
+  \[
+    \text{Params} = 128 \times (64 \times 3 \times 3 + 1) = 128 \times 577 = 73\,856
+    \approx 74\text{k paramètres}
+  \]
+\end{examplebox}
+
+% ════════════════════════════════════════════════════════════════════════════════
+%  CHAPITRE 5 — MÉTRIQUES DIAGNOSTIQUES
+% ════════════════════════════════════════════════════════════════════════════════
+\chapter{Métriques de Diagnostic}
+
+\section{Confidence Score}
+
+\begin{definitionbox}{Définition}
+  Le \textbf{score de confiance} est la probabilité jointe qu'une région contient
+  un objet \emph{et} que cet objet appartient à une classe donnée.
+\end{definitionbox}
+
+\begin{formulebox}{Formule}
+  \[
+    \text{Conf} = P(\text{object}) \times P(\text{class} \mid \text{object})
+                = P(\text{object}) \times P_c
+  \]
+\end{formulebox}
+
+\begin{examplebox}{Exemple}
+  \begin{itemize}
+    \item $P(\text{object}) = 0{,}92$ — le modèle est sûr à 92\% qu'il y a un objet.
+    \item $P(\text{voiture} \mid \text{objet}) = 0{,}88$ — parmi les objets, 88\%
+          de chances que ce soit une voiture.
+    \item $\text{Conf} = 0{,}92 \times 0{,}88 = \mathbf{0{,}81}$
+  \end{itemize}
+  Cette détection passe le seuil de confiance par défaut de 0{,}25.
+\end{examplebox}
+
+\section{Courbe PR (Precision-Recall)}
+
+\begin{definitionbox}{Définition}
+  La \textbf{courbe PR} trace la Precision en fonction du Recall lorsqu'on fait
+  varier le seuil de confiance de 1{,}0 (très restrictif) à 0{,}0 (très permissif).
+\end{definitionbox}
+
+\textbf{Interprétation :}
+\begin{itemize}
+  \item Courbe proche du coin supérieur droit $(R=1, P=1)$ : modèle excellent.
+  \item Aire sous la courbe = \textbf{AP} (voir section précédente).
+  \item Chute rapide de la Precision quand le Recall augmente : le modèle produit
+        beaucoup de fausses alarmes pour ``capturer'' les derniers objets.
+\end{itemize}
+
+\begin{center}
+\begin{tikzpicture}
+  \begin{axis}[
+    width=10cm, height=7cm,
+    xlabel={Recall}, ylabel={Precision},
+    xmin=0, xmax=1, ymin=0, ymax=1,
+    grid=both, grid style={gray!30},
+    title={\textbf{Courbe PR — Exemple YOLOv8}},
+    legend pos=south west,
+    tick label style={font=\small}
+  ]
+  % Courbe d'un bon modèle
+  \addplot[color=yoloblue, thick, smooth] coordinates {
+    (0.0,1.00)(0.10,0.98)(0.20,0.96)(0.30,0.93)
+    (0.40,0.89)(0.50,0.85)(0.60,0.80)(0.70,0.73)
+    (0.80,0.63)(0.90,0.50)(1.00,0.30)
+  };
+  \addlegendentry{YOLOv8m (AP=0.81)}
+  % Courbe d'un modèle moyen
+  \addplot[color=yoloorange, thick, smooth, dashed] coordinates {
+    (0.0,0.90)(0.10,0.84)(0.20,0.78)(0.30,0.71)
+    (0.40,0.64)(0.50,0.57)(0.60,0.50)(0.70,0.42)
+    (0.80,0.33)(0.90,0.22)(1.00,0.10)
+  };
+  \addlegendentry{YOLOv8n (AP=0.56)}
+  % Ligne de référence (modèle aléatoire)
+  \addplot[color=gray, thin, dotted] coordinates {(0,0.5)(1,0.5)};
+  \addlegendentry{Aléatoire}
+  \end{axis}
+\end{tikzpicture}
+\end{center}
+
+\section{Courbe F1-Confidence}
+
+\begin{definitionbox}{Définition}
+  La \textbf{courbe F1-Confidence} affiche le F1-Score en fonction du seuil de
+  confiance. Elle permet d'identifier le seuil optimal à utiliser lors de
+  l'inférence.
+\end{definitionbox}
+
+\begin{examplebox}{Tableau d'analyse}
+  \begin{center}
+  \begin{tabular}{ccccc}
+    \toprule
+    \textbf{Seuil conf.} & \textbf{P} & \textbf{R} & \textbf{F1} & \textbf{Recommandation} \\
+    \midrule
+    0.10 & 0.61 & 0.95 & 0.745 & Trop permissif \\
+    0.25 & 0.72 & 0.88 & 0.792 & Défaut YOLOv8 \\
+    0.40 & 0.81 & 0.79 & \textbf{0.800} & \textbf{Optimal} \\
+    0.55 & 0.89 & 0.68 & 0.771 & Précis, moins de rappel \\
+    0.70 & 0.94 & 0.52 & 0.671 & Très restrictif \\
+    0.85 & 0.98 & 0.31 & 0.471 & Trop restrictif \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  Le seuil optimal est 0{,}40, maximisant le F1-Score à 0{,}800.
+\end{examplebox}
+
+\section{Matrice de Confusion}
+
+\begin{definitionbox}{Définition}
+  La \textbf{matrice de confusion} est un tableau $N \times N$ (où $N$ est le
+  nombre de classes + 1 pour ``background'') croisant classes prédites et classes
+  réelles. Elle révèle les confusions inter-classes et les taux de détection
+  manquée.
+\end{definitionbox}
+
+\begin{examplebox}{Matrice de confusion — 3 classes}
+  Normalisée par rapport au total des GT par classe :
+  \begin{center}
+  \begin{tabular}{l|ccc|c}
+    \toprule
+    & \multicolumn{3}{c|}{\textbf{Prédit}} & \\
+    \textbf{Réel} & Voiture & Piéton & Vélo & Manqué \\
+    \midrule
+    Voiture & \cellcolor{yologreen!40}\textbf{0.89} & 0.03 & 0.02 & 0.06 \\
+    Piéton  & 0.05 & \cellcolor{yologreen!40}\textbf{0.76} & 0.08 & 0.11 \\
+    Vélo    & 0.02 & 0.12 & \cellcolor{yologreen!40}\textbf{0.71} & 0.15 \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+
+  \textit{Lecture :}
+  \begin{itemize}
+    \item 89\% des voitures réelles sont détectées comme ``voiture''.
+    \item 12\% des vélos sont confondus avec des piétons.
+    \item 15\% des vélos sont manqués (FN).
+  \end{itemize}
+\end{examplebox}
+
+% ════════════════════════════════════════════════════════════════════════════════
+%  CHAPITRE 6 — TABLEAU RÉCAPITULATIF
+% ════════════════════════════════════════════════════════════════════════════════
+\chapter{Tableau Récapitulatif Exhaustif}
+
+\begin{longtable}{>{\bfseries}p{3.2cm} p{3.8cm} p{3.5cm} p{3.5cm}}
+  \toprule
+  \textbf{Métrique} & \textbf{Formule} & \textbf{Plage} & \textbf{Rôle} \\
+  \midrule
+  \endfirsthead
+  \toprule
+  \textbf{Métrique} & \textbf{Formule} & \textbf{Plage} & \textbf{Rôle} \\
+  \midrule
+  \endhead
+  \bottomrule
+  \endlastfoot
+
+  Precision (P)
+    & $\frac{TP}{TP+FP}$
+    & $[0, 1]$, $\uparrow$
+    & Taux de détections correctes \\[4pt]
+
+  Recall (R)
+    & $\frac{TP}{TP+FN}$
+    & $[0, 1]$, $\uparrow$
+    & Taux d'objets réels détectés \\[4pt]
+
+  F1-Score
+    & $2 \cdot \frac{P \cdot R}{P+R}$
+    & $[0, 1]$, $\uparrow$
+    & Équilibre P/R, choix du seuil \\[4pt]
+
+  AP (par classe)
+    & $\int_0^1 P(R)\,dR$
+    & $[0, 1]$, $\uparrow$
+    & Précision globale d'une classe \\[4pt]
+
+  mAP50
+    & $\frac{1}{N}\sum AP_i^{@0.5}$
+    & $[0, 1]$, $\uparrow$
+    & Métrique principale YOLOv8 \\[4pt]
+
+  mAP50-95
+    & $\frac{1}{10}\sum_{t} \mAP_t$
+    & $[0, 1]$, $\uparrow$
+    & Standard COCO, localisation fine \\[4pt]
+
+  \midrule
+
+  IoU
+    & $\frac{|B_p \cap B_g|}{|B_p \cup B_g|}$
+    & $[0, 1]$, $\uparrow$
+    & Qualité de localisation \\[4pt]
+
+  GIoU
+    & $\IoU - \frac{|C \setminus \text{union}|}{|C|}$
+    & $[-1, 1]$, $\uparrow$
+    & IoU + pénalité distance \\[4pt]
+
+  DIoU
+    & $\IoU - \frac{\rho^2}{c^2}$
+    & $[-1, 1]$, $\uparrow$
+    & IoU + distance des centres \\[4pt]
+
+  CIoU
+    & $\text{DIoU} - \alpha v$
+    & $[-1, 1]$, $\uparrow$
+    & Loss de localisation YOLOv8 \\[4pt]
+
+  \midrule
+
+  Box Loss
+    & $1 - \text{CIoU}$
+    & $[0, +\infty)$, $\downarrow$
+    & Erreur de régression des boîtes \\[4pt]
+
+  Cls Loss
+    & BCE par classe
+    & $[0, +\infty)$, $\downarrow$
+    & Erreur de classification \\[4pt]
+
+  DFL Loss
+    & $-[(\cdot)\log S_i + (\cdot)\log S_{i+1}]$
+    & $[0, +\infty)$, $\downarrow$
+    & Précision des bords (distribution) \\[4pt]
+
+  \midrule
+
+  FPS
+    & $1/\text{latence}$
+    & $\mathbb{R}^+$, $\uparrow$
+    & Vitesse temps réel \\[4pt]
+
+  GFLOPs
+    & Opérations flottantes
+    & $\mathbb{R}^+$, $\downarrow$
+    & Charge computationnelle \\[4pt]
+
+  Params (M)
+    & Nb de poids du modèle
+    & $\mathbb{R}^+$, contexte
+    & Taille et capacité du modèle \\[4pt]
+
+  Confidence
+    & $P(\text{obj}) \times P_c$
+    & $[0, 1]$, $\uparrow$
+    & Certitude d'une détection \\[4pt]
+
+  Courbe PR
+    & $P = f(R)$
+    & Visualisation
+    & Trade-off P/R global \\[4pt]
+
+  Courbe F1-Conf
+    & $F1 = f(\text{conf})$
+    & Visualisation
+    & Seuil de confiance optimal \\[4pt]
+
+  Matrice confusion
+    & $N \times N$ classes
+    & Visualisation
+    & Confusions inter-classes \\
+
+\end{longtable}
+
+\textit{$\uparrow$ : une valeur plus élevée est meilleure. $\downarrow$ : une
+valeur plus basse est meilleure.}
+
+% ════════════════════════════════════════════════════════════════════════════════
+%  CHAPITRE 7 — CODE PYTHON DE RÉFÉRENCE
+% ════════════════════════════════════════════════════════════════════════════════
+\chapter{Implémentation Python de Référence}
+
+\begin{lstlisting}[style=python, caption={Calcul des métriques de base avec NumPy},
+  label={lst:metrics_numpy}]
+import numpy as np
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. Métriques de classification
+# ──────────────────────────────────────────────────────────────────────────────
+TP, FP, FN = 6, 3, 2
+
+precision = TP / (TP + FP)
+recall    = TP / (TP + FN)
+f1        = 2 * precision * recall / (precision + recall)
+
+print(f"Precision : {precision:.4f}")  # 0.6667
+print(f"Recall    : {recall:.4f}")     # 0.7500
+print(f"F1-Score  : {f1:.4f}")         # 0.7059
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2. Calcul de l'IoU
+# ──────────────────────────────────────────────────────────────────────────────
+def compute_iou(box_pred, box_gt):
+    """
+    box format: (x1, y1, x2, y2)
+    """
+    x1 = max(box_pred[0], box_gt[0])
+    y1 = max(box_pred[1], box_gt[1])
+    x2 = min(box_pred[2], box_gt[2])
+    y2 = min(box_pred[3], box_gt[3])
+
+    inter = max(0, x2 - x1) * max(0, y2 - y1)
+    area_pred = (box_pred[2]-box_pred[0]) * (box_pred[3]-box_pred[1])
+    area_gt   = (box_gt[2]-box_gt[0])   * (box_gt[3]-box_gt[1])
+    union = area_pred + area_gt - inter
+
+    return inter / union if union > 0 else 0.0
+
+iou = compute_iou((100,150,250,350), (120,160,270,370))
+print(f"IoU       : {iou:.4f}")  # 0.6712
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. Calcul de l'AP (méthode des 11 points)
+# ──────────────────────────────────────────────────────────────────────────────
+def compute_ap_11pts(precisions, recalls):
+    """
+    precisions, recalls : listes triées par confiance décroissante
+    """
+    ap = 0.0
+    for t in np.linspace(0, 1, 11):
+        # Precision max pour Recall >= t
+        p_interp = max(
+            [p for p, r in zip(precisions, recalls) if r >= t],
+            default=0
+        )
+        ap += p_interp / 11
+    return ap
+
+prec = [1.0, 1.0, 0.667, 0.75, 0.6, 0.667, 0.571, 0.625, 0.556, 0.5]
+rec  = [0.2, 0.4, 0.4,   0.6,  0.6, 0.8,   0.8,   1.0,   1.0,   1.0]
+ap   = compute_ap_11pts(prec, rec)
+print(f"AP (11pts): {ap:.4f}")  # ≈ 0.5848
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. Entraînement YOLOv8 avec Ultralytics
+# ──────────────────────────────────────────────────────────────────────────────
+from ultralytics import YOLO
+
+model = YOLO("yolov8m.pt")           # Charger le modèle pré-entraîné
+
+results = model.train(
+    data   = "coco128.yaml",         # Fichier de configuration du dataset
+    epochs = 100,
+    imgsz  = 640,
+    batch  = 16,
+    device = 0                       # GPU 0
+)
+
+# 5. Évaluation
+metrics = model.val(data="coco128.yaml", imgsz=640)
+print(f"mAP50    : {metrics.box.map50:.4f}")
+print(f"mAP50-95 : {metrics.box.map:.4f}")
+print(f"Precision: {metrics.box.mp:.4f}")
+print(f"Recall   : {metrics.box.mr:.4f}")
+\end{lstlisting}
+
+% ════════════════════════════════════════════════════════════════════════════════
+%  CONCLUSION
+% ════════════════════════════════════════════════════════════════════════════════
+\chapter{Conclusion et Guide Pratique}
+
+\section{Quelle métrique utiliser selon l'objectif ?}
+
+\begin{center}
+\begin{tabular}{p{4.5cm} p{5cm} p{4cm}}
+  \toprule
+  \textbf{Objectif} & \textbf{Métrique prioritaire} & \textbf{Secondaire} \\
+  \midrule
+  Comparer des modèles & mAP50-95 (COCO) & mAP50 \\
+  Déploiement rapide & FPS / Latence & GFLOPs \\
+  Minimiser fausses alarmes & Precision & F1-Score \\
+  Minimiser objets manqués & Recall & F1-Score \\
+  Équilibre général & F1-Score / mAP50 & Courbe PR \\
+  Analyser les erreurs & Matrice de confusion & Courbe F1-Conf \\
+  Localisation précise & mAP50-95 / CIoU & DIoU \\
+  Embarqué / Edge AI & Params (M) / Size & GFLOPs \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+\section{Seuils de référence YOLOv8 (COCO)}
+
+\begin{center}
+\begin{tabular}{lcccc}
+  \toprule
+  \textbf{Modèle} & \textbf{mAP50} & \textbf{mAP50-95} & \textbf{Params} & \textbf{FPS (T4)} \\
+  \midrule
+  YOLOv8n & 52.9 & 37.3 & 3.2M  & 680 \\
+  YOLOv8s & 61.8 & 44.9 & 11.2M & 376 \\
+  YOLOv8m & 67.2 & 50.2 & 25.9M & 171 \\
+  YOLOv8l & 69.8 & 52.9 & 43.7M & 110 \\
+  YOLOv8x & 71.0 & 53.9 & 68.2M & 70  \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+\section{Checklist d'évaluation YOLOv8}
+
+\begin{tcolorbox}[colback=lightblue, colframe=yoloblue,
+  title={\textbf{Checklist : évaluer un modèle YOLOv8}}, breakable]
+  \begin{itemize}
+    \item[$\square$] Vérifier la convergence des \textbf{3 losses} (box, cls, dfl)
+          sur train \emph{et} val.
+    \item[$\square$] Contrôler l'absence de \textbf{surapprentissage} :
+          val\_loss $\leq 1{,}5 \times$ train\_loss.
+    \item[$\square$] Comparer \textbf{mAP50} et \textbf{mAP50-95} : écart $> 0{,}25$
+          = localisation imprécise.
+    \item[$\square$] Analyser la \textbf{matrice de confusion} pour détecter les
+          confusions inter-classes.
+    \item[$\square$] Utiliser la \textbf{courbe F1-Confidence} pour choisir le
+          seuil de confiance optimal.
+    \item[$\square$] Vérifier \textbf{AP par classe} : classes avec AP $< 0{,}5$
+          nécessitent plus de données.
+    \item[$\square$] Mesurer les \textbf{FPS} sur le matériel cible.
+  \end{itemize}
+\end{tcolorbox}
+
+\bigskip
+\begin{notebox}
+  Ce document couvre l'ensemble des métriques utilisées par YOLOv8 dans le
+  contexte de la détection et de la reconnaissance d'objets. Pour des cas
+  d'usage spécifiques (segmentation, pose estimation), des métriques
+  supplémentaires comme le \textbf{Mask AP} ou l'**OKS (Object Keypoint
+  Similarity)** entrent en jeu, mais restent des extensions des principes
+  présentés ici.
+\end{notebox}
+
+\end{document}
