@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Model summary in train, evaluate and export program.
 - Model fine-tuning.
 - Prediction with onnx model inference + preprocessing and postprocessing with numpy.
-- Inference of ONNX YOLO model  on video capture in Rust and Python.
+- Inference of ONNX YOLO model on video capture in Rust and Python.
+- Evaluation Metrics results building.
  
 
 ### Changed 

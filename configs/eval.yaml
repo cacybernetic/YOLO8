@@ -1,17 +1,52 @@
 # ============================================================================
 # Configuration d'évaluation YOLOv8
 # ============================================================================
+# Usage:
+#   python -m module.evaluate --config module/eval.yaml
+#
+# Le script génère dans le dossier `output_dir`:
+#   - per_class.csv     : métriques par classe (P, R, F1, AP50, AP50-95, Cls Loss)
+#   - global.csv        : métriques globales (mAP, P/R/F1 macro+micro, losses, IoU)
+#   - figures/pr_curve.png
+#   - figures/f1_confidence.png  (avec marquage du seuil optimal)
+#   - figures/confusion_matrix.png  (counts bruts)
+#   - figures/confusion_matrix_normalized.png
+# ============================================================================
 
-dataset_dir: /home/mokira3d48/datasets/numpr
-num_classes: 36
+# --- Données ---
+dataset_dir: /chemin/vers/dataset_dir
+num_classes: 80
+split: test                # 'test' ou 'train'
+
+# --- Modèle ---
 weights: checkpoints/best.pt
-
 version: n
 image_size: 640
+
+# --- Inférence ---
 batch_size: 16
 num_workers: 4
 device: cuda
 
+# Seuil de confiance pour le NMS de collecte (très bas pour ne rien filtrer
+# trop tôt; le vrai seuil de reporting est ensuite trouvé automatiquement
+# en maximisant la F1 macro sur la courbe F1-Confidence).
 conf_threshold: 0.001
-iou_threshold: 0.7
-split: test                # 'test' ou 'train'
+iou_threshold: 0.7         # seuil IoU du NMS
+
+# --- Sortie ---
+# Dossier où seront placés les CSVs et les figures matplotlib.
+# Le sous-dossier `figures/` est créé automatiquement.
+output_dir: results
+
+# Optionnel: liste des noms de classes pour les axes des plots et le CSV.
+# Si null ou si la longueur ne matche pas num_classes, des noms génériques
+# class_0, class_1, ... seront utilisés.
+class_names: null
+# Exemple pour COCO:
+# class_names: [person, bicycle, car, motorcycle, airplane, ...]
+
+# --- Pertes (mêmes gains qu'en train pour cohérence des valeurs reportées) ---
+box_gain: 7.5
+cls_gain: 0.5
+dfl_gain: 1.5

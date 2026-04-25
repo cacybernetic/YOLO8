@@ -75,6 +75,12 @@ class EvalConfig:
     conf_threshold: float = 0.001
     iou_threshold: float = 0.7
     split: str = 'test'        # 'test' ou 'train'
+    output_dir: str = 'results'      # dossier de sortie pour CSVs et figures
+    class_names: Optional[list] = None  # noms des classes (optionnel, pour les plots)
+    # Loss gains pour calcul des losses sur val (mêmes valeurs qu'en train)
+    box_gain: float = 7.5
+    cls_gain: float = 0.5
+    dfl_gain: float = 1.5
 
 
 @dataclass
