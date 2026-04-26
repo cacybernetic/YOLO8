@@ -27,7 +27,9 @@ from module.dataset import YOLODataset
 from module.lossfn import ComputeLoss
 from module.metrics import MetricAccumulator, non_max_suppression
 from module.model import MyYolo
-from module.utils import print_model_summary, plot_training_history
+from loguru import logger
+
+from module.utils import print_model_summary, plot_training_history, setup_logging
 
 
 # ---------------------------------------------------------------------------
@@ -144,10 +146,10 @@ def freeze_feature_layers(model):
 
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[freeze] Backbone + Neck gelés: {n_frozen_params/1e6:.3f}M params "
-          f"figés, {n_bn_frozen} couches BN mises en eval()")
-    print(f"[freeze] Paramètres entraînables: {trainable/1e6:.3f}M / "
-          f"{total/1e6:.3f}M  ({100*trainable/total:.1f}%)")
+    logger.info(f"Backbone + Neck gelés: {n_frozen_params/1e6:.3f}M params "
+                f"figés, {n_bn_frozen} couches BN mises en eval()")
+    logger.info(f"Paramètres entraînables: {trainable/1e6:.3f}M / "
+                f"{total/1e6:.3f}M  ({100*trainable/total:.1f}%)")
     return n_frozen_params
 
 
@@ -195,14 +197,14 @@ def resolve_resume_path(cfg):
         p = Path(cfg.resume)
         if p.exists():
             return p
-        print(f"[resume] ATTENTION: '{cfg.resume}' n'existe pas, auto-resume tenté.")
+        logger.warning(f"'{cfg.resume}' n'existe pas, auto-resume tenté.")
 
     if cfg.auto_resume:
         latest = find_latest_checkpoint(cfg.checkpoint_dir)
         if latest is not None:
-            print(f"[resume] Auto-detect: dernier checkpoint trouvé -> {latest}")
+            logger.info(f"Auto-detect: dernier checkpoint trouvé -> {latest}")
             return latest
-        print(f"[resume] Aucun checkpoint dans '{cfg.checkpoint_dir}', démarrage from scratch.")
+        logger.info(f"Aucun checkpoint dans '{cfg.checkpoint_dir}', démarrage from scratch.")
 
     return None
 
@@ -223,9 +225,9 @@ def rotate_checkpoints(ckpt_dir, max_keep):
     for p in to_remove:
         try:
             p.unlink()
-            print(f"  [ckpt] Supprimé: {p.name}")
+            logger.info(f"Checkpoint supprimé (rotation): {p.name}")
         except OSError as e:
-            print(f"  [ckpt] Impossible de supprimer {p}: {e}")
+            logger.warning(f"Impossible de supprimer {p}: {e}")
 
 
 def load_checkpoint_if_any(path, model, optimizer=None, device='cpu'):
@@ -239,8 +241,8 @@ def load_checkpoint_if_any(path, model, optimizer=None, device='cpu'):
 
     ckpt_path = Path(path)
     if not ckpt_path.exists():
-        print(f"[resume] ATTENTION: le fichier '{path}' n'existe pas. "
-              f"Entraînement démarré from scratch.")
+        logger.warning(f"Le fichier '{path}' n'existe pas. "
+                       f"Entraînement démarré from scratch.")
         return 0, -float('inf')
 
     # weights_only=False est nécessaire pour charger l'optimizer et les
@@ -277,14 +279,14 @@ def load_checkpoint_if_any(path, model, optimizer=None, device='cpu'):
         try:
             optimizer.load_state_dict(ckpt['optimizer'])
         except Exception as e:
-            print(f"[resume] ATTENTION: impossible de restaurer l'état de l'optimizer "
-                  f"({e}). L'optimizer repart de zéro.")
+            logger.warning(f"Impossible de restaurer l'état de l'optimizer "
+                           f"({e}). L'optimizer repart de zéro.")
 
     epoch_start = (ckpt.get('epoch', -1) + 1) if has_meta else 0
     best_metric = ckpt.get('best_metric', -float('inf')) if has_meta else -float('inf')
 
-    print(f"[resume] Reprise depuis '{path}' (epoch_start={epoch_start}, "
-          f"best_metric={best_metric:.4f})")
+    logger.info(f"Reprise depuis '{path}' (epoch_start={epoch_start}, "
+                f"best_metric={best_metric:.4f})")
     return epoch_start, best_metric
 
 
@@ -355,9 +357,9 @@ def load_pretrained_weights(path, model, device='cpu'):
             origin = (f" (fine-tune: {old_nc} -> {new_nc} classes, "
                       f"source: {Path(src).name})")
 
-    print(f"[pretrained] Poids chargés depuis '{path}'{origin}")
-    print(f"[pretrained] Démarrage d'un nouvel entraînement "
-          f"(epoch=0, optimizer fresh, best_metric=-inf)")
+    logger.info(f"Poids chargés depuis '{path}'{origin}")
+    logger.info("Démarrage d'un nouvel entraînement "
+                "(epoch=0, optimizer fresh, best_metric=-inf)")
     return True
 
 
@@ -474,9 +476,9 @@ def train_one_epoch(model, loader, loss_fn, optimizer, scheduler,
 
     n = max(running['n'], 1)
     elapsed = time.time() - t0
-    print(f"  [train] epoch {epoch+1} done in {elapsed:.1f}s "
-          f"| box={running['box']/n:.4f} cls={running['cls']/n:.4f} "
-          f"dfl={running['dfl']/n:.4f} total={running['total']/n:.4f}")
+    logger.success(f"epoch {epoch+1} terminée en {elapsed:.1f}s "
+                   f"| box={running['box']/n:.4f} cls={running['cls']/n:.4f} "
+                   f"dfl={running['dfl']/n:.4f} total={running['total']/n:.4f}")
     return {k: v / n for k, v in running.items() if k != 'n'}
 
 
@@ -586,13 +588,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, required=True,
                         help='Chemin vers train.yaml')
+    parser.add_argument('--log-level', type=str, default='INFO',
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                        help='Niveau de log loguru')
     args = parser.parse_args()
+
+    # Configuration du logging unifié pour tout le projet
+    setup_logging(level=args.log_level)
 
     cfg: TrainConfig = load_train_config(args.config)
     set_seed(cfg.seed)
     device = torch.device(cfg.device if torch.cuda.is_available()
                           or not cfg.device.startswith('cuda') else 'cpu')
-    print(f"[setup] device={device}")
+    logger.info(f"device={device}")
 
     # --- Data ---
     train_ds = YOLODataset(cfg.dataset_dir, split='train',
@@ -602,7 +610,7 @@ def main():
     val_ds = YOLODataset(cfg.dataset_dir, split='test',
                          image_size=cfg.image_size, augment=False,
                          check_images=cfg.check_images)
-    print(f"[data] train={len(train_ds)} | val={len(val_ds)}")
+    logger.info(f"Données: train={len(train_ds)} | val={len(val_ds)}")
 
     train_loader = DataLoader(
         train_ds, batch_size=cfg.batch_size, shuffle=True,
@@ -622,7 +630,8 @@ def main():
     # S'assurer que les strides sont sur le bon device
     model.head.stride = model.head.stride.to(device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"[model] YOLOv8-{cfg.version} | {n_params:.3f}M params | strides={model.head.stride.tolist()}")
+    logger.info(f"Modèle: YOLOv8-{cfg.version} | {n_params:.3f}M params | "
+                f"strides={model.head.stride.tolist()}")
     # NOTE: le résumé du modèle est imprimé plus loin, APRÈS le chargement des
     # poids et le freeze éventuel. À ce stade, la colonne "Trainable" de
     # torchinfo et le total des params entraînables reflètent alors l'état réel
@@ -674,7 +683,7 @@ def main():
     else:
         # MODE 3: from scratch
         startup_mode = 'scratch'
-        print(f"[startup] Aucun poids initial fourni. Entraînement from scratch.")
+        logger.info("Aucun poids initial fourni. Entraînement from scratch.")
 
     # --- Freeze (optionnel) — doit être avant build_optimizer ---
     # Rationale: un paramètre gelé (requires_grad=False) est ignoré par
@@ -702,13 +711,13 @@ def main():
             ckpt = torch.load(resume_path, map_location=device, weights_only=False)
             if isinstance(ckpt, dict) and 'optimizer' in ckpt:
                 optimizer.load_state_dict(ckpt['optimizer'])
-                print(f"[resume] État de l'optimizer restauré")
+                logger.info("État de l'optimizer restauré")
         except Exception as e:
-            print(f"[resume] Impossible de restaurer l'optimizer ({e}). "
-                  f"Poursuite avec un optimizer fresh.")
+            logger.warning(f"Impossible de restaurer l'optimizer ({e}). "
+                           f"Poursuite avec un optimizer fresh.")
     elif startup_mode == 'resume' and cfg.freeze_feature_layers:
-        print(f"[resume] État de l'optimizer IGNORÉ "
-              f"(freeze_feature_layers actif, groupes de params incompatibles)")
+        logger.info("État de l'optimizer IGNORÉ "
+                    "(freeze_feature_layers actif, groupes de params incompatibles)")
 
     best_path = ckpt_dir / 'best.pt'
 
@@ -717,18 +726,16 @@ def main():
     # À ce stade, `requires_grad` reflète l'état réel de chaque paramètre,
     # donc la colonne "Trainable" de torchinfo et le total des params
     # entraînables sont cohérents avec ce qui sera réellement optimisé.
-    print("\n" + "=" * 80)
-    print(f"Résumé du modèle (mode de démarrage: {startup_mode}, "
-          f"freeze={cfg.freeze_feature_layers})")
-    print("=" * 80)
+    logger.info(f"Résumé du modèle (mode={startup_mode}, "
+                f"freeze={cfg.freeze_feature_layers}):")
     print_model_summary(model, input_size=(1, 3, cfg.image_size, cfg.image_size),
                         device=device)
 
     # --- Training loop ---
     if cfg.grad_accumulation_steps > 1:
         effective_bs = cfg.batch_size * cfg.grad_accumulation_steps
-        print(f"[train] grad_accumulation_steps={cfg.grad_accumulation_steps} "
-              f"| effective batch size = {effective_bs}")
+        logger.info(f"grad_accumulation_steps={cfg.grad_accumulation_steps} "
+                    f"| effective batch size = {effective_bs}")
 
     # Historique des pertes train/val pour le tracé en fin d'epoch.
     # Stocké dans un dict simple, sérialisable, restauré depuis le checkpoint
@@ -747,17 +754,17 @@ def main():
                                           weights_only=False)
             if isinstance(ckpt_for_history, dict) and 'history' in ckpt_for_history:
                 history = ckpt_for_history['history']
-                print(f"[history] Restauré depuis le checkpoint "
-                      f"({len(history.get('epochs_train', []))} epochs train, "
-                      f"{len(history.get('epochs_val', []))} epochs val)")
+                logger.info(f"Historique restauré depuis le checkpoint "
+                            f"({len(history.get('epochs_train', []))} epochs train, "
+                            f"{len(history.get('epochs_val', []))} epochs val)")
         except Exception as e:
-            print(f"[history] Impossible de restaurer l'historique ({e}). "
-                  f"Repart d'un historique vide.")
+            logger.warning(f"Impossible de restaurer l'historique ({e}). "
+                           f"Repart d'un historique vide.")
 
     history_path = Path(cfg.history_plot_path)
 
     for epoch in range(epoch_start, cfg.epochs):
-        print(f"\n=== Epoch {epoch+1}/{cfg.epochs} ===")
+        logger.info(f"=== Epoch {epoch+1}/{cfg.epochs} ===")
         train_stats = train_one_epoch(
             model, train_loader, loss_fn, optimizer, scheduler,
             epoch, cfg.epochs, num_steps_per_epoch,
@@ -781,14 +788,14 @@ def main():
                 cfg.conf_threshold, cfg.iou_threshold,
                 loss_fn=loss_fn,    # IMPORTANT: passe loss_fn pour calcul des pertes val
             )
-            print(f"  [val] P={val_metrics['precision']:.4f} "
-                  f"R={val_metrics['recall']:.4f} "
-                  f"mAP@0.5={val_metrics['map50']:.4f} "
-                  f"mAP@0.5:0.95={val_metrics['map']:.4f} "
-                  f"| total={val_metrics.get('total', 0):.4f} "
-                  f"(box {val_metrics.get('box', 0):.4f} "
-                  f"cls {val_metrics.get('cls', 0):.4f} "
-                  f"dfl {val_metrics.get('dfl', 0):.4f})")
+            logger.info(f"[val] P={val_metrics['precision']:.4f} "
+                        f"R={val_metrics['recall']:.4f} "
+                        f"mAP@0.5={val_metrics['map50']:.4f} "
+                        f"mAP@0.5:0.95={val_metrics['map']:.4f} "
+                        f"| total={val_metrics.get('total', 0):.4f} "
+                        f"(box {val_metrics.get('box', 0):.4f} "
+                        f"cls {val_metrics.get('cls', 0):.4f} "
+                        f"dfl {val_metrics.get('dfl', 0):.4f})")
 
             # Accumulation de l'historique val (uniquement aux epochs où on valide)
             history['epochs_val'].append(epoch + 1)
@@ -803,7 +810,7 @@ def main():
         try:
             plot_training_history(history, history_path)
         except Exception as e:
-            print(f"  [plot] Échec du tracé de l'historique: {e}")
+            logger.warning(f"Échec du tracé de l'historique: {e}")
 
         # Checkpoint d'epoch (inclut l'historique pour la continuité en cas de reprise)
         state = {
@@ -818,7 +825,7 @@ def main():
         }
         epoch_ckpt = ckpt_dir / f"epoch_{epoch+1:04d}.pt"
         save_checkpoint(state, epoch_ckpt)
-        print(f"  [ckpt] Sauvegardé: {epoch_ckpt.name}")
+        logger.info(f"Checkpoint sauvegardé: {epoch_ckpt.name}")
         rotate_checkpoints(ckpt_dir, cfg.max_checkpoints)
 
         # Best model
@@ -828,12 +835,13 @@ def main():
                 best_metric = metric
                 state['best_metric'] = best_metric
                 save_checkpoint(state, best_path)
-                print(f"  [best] Nouveau meilleur {cfg.save_best_metric}={best_metric:.4f} -> {best_path}")
+                logger.success(f"Nouveau meilleur {cfg.save_best_metric}="
+                               f"{best_metric:.4f} -> {best_path}")
 
-    print("\n[done] Entraînement terminé.")
-    print(f"  Graphique d'historique: {history_path}")
+    logger.success("Entraînement terminé.")
+    logger.info(f"Graphique d'historique: {history_path}")
     if best_metric > -float('inf'):
-        print(f"  Best {cfg.save_best_metric}: {best_metric:.4f}")
+        logger.info(f"Best {cfg.save_best_metric}: {best_metric:.4f}")
 
 
 if __name__ == '__main__':

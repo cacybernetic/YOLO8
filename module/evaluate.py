@@ -30,6 +30,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from loguru import logger
 
 from module.config import load_eval_config, EvalConfig
 from module.dataset import YOLODataset
@@ -49,8 +50,8 @@ from module.metrics_eval import (
     plot_pr_curves,
 )
 from module.model import MyYolo
-from train import build_val_targets
-from module.utils import print_model_summary
+from module.train import build_val_targets
+from module.utils import print_model_summary, setup_logging
 
 
 # ---------------------------------------------------------------------------
@@ -235,17 +236,17 @@ def collect_predictions_and_losses(model, loader, device, image_size,
 def evaluate(cfg: EvalConfig):
     # Détection automatique du device si CUDA non dispo
     if cfg.device.startswith('cuda') and not torch.cuda.is_available():
-        print(f"[setup] CUDA indisponible, fallback sur CPU")
+        logger.warning("CUDA indisponible, fallback sur CPU")
         device = torch.device('cpu')
     else:
         device = torch.device(cfg.device)
-    print(f"[setup] device={device}")
+    logger.info(f"device={device}")
 
     # Dossier de sortie pour CSVs et figures
     output_dir = Path(cfg.output_dir)
     figures_dir = output_dir / 'figures'
     figures_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[output] résultats dans: {output_dir}")
+    logger.info(f"Résultats dans: {output_dir}")
 
     # --- Dataset + DataLoader ---
     ds = YOLODataset(cfg.dataset_dir, split=cfg.split,
@@ -255,7 +256,7 @@ def evaluate(cfg: EvalConfig):
         num_workers=cfg.num_workers, pin_memory=True,
         collate_fn=YOLODataset.collate_fn, drop_last=False,
     )
-    print(f"[data] {cfg.split}={len(ds)}")
+    logger.info(f"Données: {cfg.split}={len(ds)}")
 
     # --- Modèle + chargement des poids ---
     model = MyYolo(version=cfg.version, num_classes=cfg.num_classes,
@@ -272,10 +273,10 @@ def evaluate(cfg: EvalConfig):
     state = ckpt.get('model', ckpt) if isinstance(ckpt, dict) else ckpt
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing:
-        print(f"[weights] missing keys: {len(missing)}")
+        logger.warning(f"missing keys: {len(missing)}")
     if unexpected:
-        print(f"[weights] unexpected keys: {len(unexpected)}")
-    print(f"[weights] Chargé: {weights_path}")
+        logger.warning(f"unexpected keys: {len(unexpected)}")
+    logger.info(f"Poids chargés: {weights_path}")
     print_model_summary(model, input_size=(1, 3, cfg.image_size, cfg.image_size),
                         device=device)
 
@@ -288,7 +289,7 @@ def evaluate(cfg: EvalConfig):
     iou_v = np.linspace(0.5, 0.95, 10)
 
     # --- Collecte (un seul passage sur le dataset) ---
-    print("[eval] Boucle d'évaluation...")
+    logger.info("Boucle d'évaluation...")
     data = collect_predictions_and_losses(
         model, loader, device, cfg.image_size,
         conf_threshold=cfg.conf_threshold,
@@ -299,7 +300,7 @@ def evaluate(cfg: EvalConfig):
     )
 
     # --- Calcul AP par classe + courbes interpolées ---
-    print("[eval] Calcul des AP par classe...")
+    logger.info("Calcul des AP par classe...")
     per_class = compute_ap_per_class(
         tp_matrix=data['tp_matrix'],
         conf=data['conf'],
@@ -314,8 +315,8 @@ def evaluate(cfg: EvalConfig):
     # que recommande le doc LaTeX dans la section sur la courbe F1-Confidence.
     px = np.linspace(0, 1, 1000)
     best_conf, best_f1 = find_best_f1_threshold(per_class, px)
-    print(f"[eval] Seuil de confiance optimal: {best_conf:.4f} "
-          f"(F1 macro = {best_f1:.4f})")
+    logger.info(f"Seuil de confiance optimal: {best_conf:.4f} "
+                f"(F1 macro = {best_f1:.4f})")
 
     # Métriques par classe au seuil optimal pour les CSVs
     metrics_at_thr = metrics_at_threshold(per_class, px, best_conf)
@@ -336,7 +337,7 @@ def evaluate(cfg: EvalConfig):
         class_names = [f'class_{i}' for i in range(cfg.num_classes)]
 
     # === CSVs ===
-    print("[eval] Génération des CSVs...")
+    logger.info("Génération des CSVs...")
     df_per_class = build_per_class_csv(
         per_class, metrics_at_thr, class_names,
         cls_loss_per_class=data['cls_loss_per_class'],
@@ -357,17 +358,17 @@ def evaluate(cfg: EvalConfig):
     global_csv = output_dir / 'global.csv'
     df_per_class.to_csv(per_class_csv, index=False)
     df_global.to_csv(global_csv, index=False)
-    print(f"  - {per_class_csv}")
-    print(f"  - {global_csv}")
+    logger.success(f"CSV écrit: {per_class_csv}")
+    logger.success(f"CSV écrit: {global_csv}")
 
     # === Figures matplotlib ===
-    print("[eval] Génération des figures...")
+    logger.info("Génération des figures...")
     plot_pr_curves(per_class, class_names, figures_dir / 'pr_curve.png')
     plot_f1_confidence(per_class, class_names, figures_dir / 'f1_confidence.png')
 
     # Matrice de confusion : on l'utilise au seuil de conf optimal pour
     # une lecture cohérente avec les autres métriques rapportées.
-    print("[eval] Calcul de la matrice de confusion...")
+    logger.info("Calcul de la matrice de confusion...")
     cm = build_confusion_matrix(
         data['all_preds_cm'], data['all_gts_cm'],
         num_classes=cfg.num_classes,
@@ -380,12 +381,15 @@ def evaluate(cfg: EvalConfig):
     plot_confusion_matrix(cm, class_names,
                           figures_dir / 'confusion_matrix.png',
                           normalize=False)
-    print(f"  - {figures_dir}/pr_curve.png")
-    print(f"  - {figures_dir}/f1_confidence.png")
-    print(f"  - {figures_dir}/confusion_matrix.png")
-    print(f"  - {figures_dir}/confusion_matrix_normalized.png")
+    logger.success(f"Figures écrites dans: {figures_dir}/")
+    for fname in ['pr_curve.png', 'f1_confidence.png',
+                  'confusion_matrix.png', 'confusion_matrix_normalized.png']:
+        logger.info(f"  - {fname}")
 
     # === Résumé console ===
+    # Note: on utilise `print` ici (pas logger) pour les tableaux pandas, car
+    # loguru préfixe chaque ligne avec un timestamp ce qui rendrait la mise en
+    # forme tabulaire illisible. Même justification que pour torchinfo.summary.
     print("\n" + "=" * 80)
     print("Résultats globaux")
     print("=" * 80)
@@ -415,7 +419,14 @@ def main():
     )
     parser.add_argument('--config', type=str, required=True,
                         help='Chemin vers eval.yaml')
+    parser.add_argument('--log-level', type=str, default='INFO',
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                        help='Niveau de log loguru')
     args = parser.parse_args()
+
+    # Configuration du logging unifié
+    setup_logging(level=args.log_level)
+
     cfg = load_eval_config(args.config)
     evaluate(cfg)
 

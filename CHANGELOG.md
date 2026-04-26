@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inference of ONNX YOLO model on video capture in Rust and Python.
 - Evaluation Metrics results building.
 - Plotting of Training/Validation history.
+- Setting of logging system (loguru).
  
 
 ### Changed 

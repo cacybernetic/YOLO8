@@ -16,6 +16,7 @@ onnxruntime==1.23.2
 onnxsim==0.6.2
 onnxconverter-common==1.16.0
 
+loguru==0.7.3
 python-dotenv==1.0.0
 pytest==8.2
 setuptools>=42

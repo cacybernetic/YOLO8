@@ -1,9 +1,83 @@
 """Utilitaires partagés entre les scripts (train, evaluate, export, infer)."""
 
-from typing import Optional
+import sys
+from pathlib import Path
+from typing import Optional, Union
 
 import torch
 import torch.nn as nn
+from loguru import logger
+
+
+def setup_logging(level: str = "INFO",
+                  show_time: bool = True,
+                  log_to_file: bool = True,
+                  log_dir: Union[str, Path] = "logs"):
+    """Configure loguru avec un format unifié pour tout le projet.
+
+    Deux sinks sont configurés :
+      - Console (stderr) : format compact et coloré pour l'humain qui regarde
+        l'entraînement en direct.
+      - Fichier journalier (`logs/app_YYYY-MM-DD.log`) : format détaillé avec
+        chemin module:fonction:ligne, rotation à 500 MB, rétention 30 jours,
+        compression .zip des anciens fichiers. Format utile pour analyser un
+        run a posteriori (corruption de données, ralentissement, etc.).
+
+    Loguru utilise un logger global (`logger`), il suffit donc de l'appeler
+    une fois dans le script d'entrée (train.py, evaluate.py, etc.) pour que
+    tous les modules profitent de la même configuration.
+
+    Args:
+        level: niveau minimum à afficher ('DEBUG', 'INFO', 'WARNING', 'ERROR').
+        show_time: ajoute l'heure en début de ligne console.
+        log_to_file: active la persistance dans `log_dir`. Mettre `False` si
+            le système de fichiers est read-only (certains conteneurs / CI).
+        log_dir: dossier de destination des fichiers de log persistés.
+    """
+    # On retire le handler par défaut de loguru pour éviter les doublons:
+    # par défaut loguru ajoute un handler vers stderr au premier import.
+    logger.remove()
+
+    # --- Sink console (stderr) ---
+    if show_time:
+        fmt_console = ("<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+                       "<level>{level: <8}</level> | "
+                       "<level>{message}</level>")
+    else:
+        fmt_console = "<level>{level: <8}</level> | <level>{message}</level>"
+
+    # `colorize=True` active les couleurs ANSI si la sortie est un TTY.
+    # `enqueue=False` car le main process est seul à logger ; les workers
+    # DataLoader sont muets.
+    logger.add(
+        sys.stderr,
+        format=fmt_console,
+        level=level,
+        colorize=True,
+        enqueue=False,
+    )
+
+    # --- Sink fichier (rotation + rétention + compression) ---
+    if log_to_file:
+        log_path = Path(log_dir)
+        log_path.mkdir(parents=True, exist_ok=True)
+        # Format détaillé pour le fichier: utile en post-mortem pour identifier
+        # exactement où un message a été émis (chemin module:fonction:ligne).
+        fmt_file = ("{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | "
+                    "{name}:{function}:{line} | {message}")
+        logger.add(
+            str(log_path / "app_{time:YYYY-MM-DD}.log"),
+            level=level,
+            format=fmt_file,
+            rotation="500 MB",     # nouveau fichier au-delà de 500 MB
+            retention="30 days",   # supprime les logs plus vieux que 30 jours
+            compression="zip",     # archive les anciens fichiers en .zip
+            enqueue=True,          # thread-safe: utile car le sink fichier peut
+                                   # être appelé indirectement depuis un worker
+            backtrace=True,        # stack trace complète pour les exceptions
+            diagnose=False,        # `False` en prod : évite de fuiter les valeurs
+                                   # de variables locales sensibles dans les logs
+        )
 
 
 def print_model_summary(model: nn.Module,
@@ -28,8 +102,7 @@ def print_model_summary(model: nn.Module,
     try:
         from torchinfo import summary
     except ImportError:
-        print("[summary] torchinfo non installé. "
-              "Installez avec: pip install torchinfo")
+        logger.warning("torchinfo non installé. Installez avec: pip install torchinfo")
         _print_native_summary(model)
         return
 
@@ -41,6 +114,8 @@ def print_model_summary(model: nn.Module,
 
     model.eval()
     try:
+        # Note: torchinfo.summary() utilise print() en interne; on n'intercepte
+        # pas, le tableau de torchinfo reste affiché tel quel.
         summary(
             model,
             input_size=input_size,
@@ -53,8 +128,8 @@ def print_model_summary(model: nn.Module,
     except Exception as e:
         # torchinfo peut échouer sur certains modèles avec sorties non-tensorielles
         # (la tête de YOLO retourne un tuple en eval). Dans ce cas, fallback.
-        print(f"[summary] torchinfo a échoué ({e.__class__.__name__}): {e}")
-        print("[summary] Fallback sur le résumé natif.")
+        logger.warning(f"torchinfo a échoué ({e.__class__.__name__}): {e}")
+        logger.info("Fallback sur le résumé natif")
         _print_native_summary(model)
     finally:
         # Restauration fidèle de l'état train/eval de chaque sous-module
@@ -67,9 +142,9 @@ def _print_native_summary(model: nn.Module):
     """Résumé minimal sans torchinfo: nb total de params + nb trainables."""
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[summary] Total params:     {total:>12,}  ({total/1e6:.3f} M)")
-    print(f"[summary] Trainable params: {trainable:>12,}  ({trainable/1e6:.3f} M)")
-    print(f"[summary] Non-trainable:    {total-trainable:>12,}")
+    logger.info(f"Total params:     {total:>12,}  ({total/1e6:.3f} M)")
+    logger.info(f"Trainable params: {trainable:>12,}  ({trainable/1e6:.3f} M)")
+    logger.info(f"Non-trainable:    {total-trainable:>12,}")
 
 
 def plot_training_history(history: dict, output_path):
@@ -102,12 +177,12 @@ def plot_training_history(history: dict, output_path):
         output_path: str ou Path, chemin du PNG à écrire.
     """
     # Import lazy : matplotlib n'est nécessaire que pour cette fonction,
+    # Import lazy : matplotlib n'est nécessaire que pour cette fonction,
     # cela évite de plomber le démarrage de train.py si matplotlib n'est pas
-    # installé (cas headless minimal).
+    # installé (cas headless minimal). `Path` est déjà importé en haut.
     import matplotlib
     matplotlib.use('Agg')  # backend non-interactif (compatible serveur sans X)
     import matplotlib.pyplot as plt
-    from pathlib import Path
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -158,4 +233,3 @@ def plot_training_history(history: dict, output_path):
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    

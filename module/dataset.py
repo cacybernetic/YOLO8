@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from loguru import logger
 
 
 IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.bmp', '.webp')
@@ -463,22 +464,22 @@ class YOLODataset(Dataset):
         if verbose:
             split_name = self.root.name
             dropped = stats['total'] - stats['kept']
-            print(f"[dataset:{split_name}] scan: {stats['kept']}/{stats['total']} "
-                  f"échantillons valides (filtrés: {dropped})")
+            logger.info(f"[dataset:{split_name}] scan: {stats['kept']}/{stats['total']} "
+                        f"échantillons valides (filtrés: {dropped})")
             if dropped > 0:
-                print(f"  - sans label:         {stats['missing_label']}")
-                print(f"  - label vide:         {stats['empty_label']}")
-                print(f"  - format invalide:    {stats['bad_format']}")
-                print(f"  - valeurs invalides:  {stats['bad_values']}")
+                logger.warning(f"  - sans label:         {stats['missing_label']}")
+                logger.warning(f"  - label vide:         {stats['empty_label']}")
+                logger.warning(f"  - format invalide:    {stats['bad_format']}")
+                logger.warning(f"  - valeurs invalides:  {stats['bad_values']}")
                 if check_images:
-                    print(f"  - image corrompue:    {stats['corrupt_image']}")
+                    logger.warning(f"  - image corrompue:    {stats['corrupt_image']}")
                 if errors_sample:
-                    print(f"  exemples d'erreurs:")
+                    logger.warning("  exemples d'erreurs:")
                     for e in errors_sample:
-                        print(f"    · {e}")
+                        logger.warning(f"    · {e}")
             if stats['kept_with_cleaning'] > 0:
-                print(f"  - {stats['kept_with_cleaning']} fichier(s) conservés après "
-                      f"nettoyage de lignes malformées")
+                logger.info(f"  - {stats['kept_with_cleaning']} fichier(s) conservés après "
+                            f"nettoyage de lignes malformées")
 
         return valid_images, valid_labels
 
@@ -659,8 +660,8 @@ class YOLODataset(Dataset):
                 break
             # Log discret: on signale la première fois seulement
             if attempt == 0:
-                print(f"[dataset] image illisible ignorée: "
-                      f"{self.image_paths[idx].name} (fallback sur un autre échantillon)")
+                logger.warning(f"[dataset] image illisible ignorée: "
+                               f"{self.image_paths[idx].name} (fallback sur un autre échantillon)")
         else:
             raise RuntimeError(
                 f"Impossible de charger un échantillon valide après {max_retries} "

@@ -19,12 +19,33 @@ Ce script reproduit en numpy pur toutes les étapes du pipeline d'inférence:
 
 import argparse
 import colorsys
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
 from PIL import Image, ImageDraw, ImageFont
+from loguru import logger
+
+
+# ---------------------------------------------------------------------------
+# Configuration loguru locale (script standalone, pas d'accès au module)
+# ---------------------------------------------------------------------------
+def _setup_logging(level: str = "INFO"):
+    """Configure loguru avec un format compact pour ce script standalone.
+
+    On retire le handler par défaut et on ajoute le nôtre vers stderr,
+    avec couleurs si TTY. Cohérent avec module/utils.py:setup_logging().
+    """
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        format=("<green>{time:HH:mm:ss}</green> | "
+                "<level>{level: <8}</level> | <level>{message}</level>"),
+        level=level,
+        colorize=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +499,7 @@ def run(args):
     providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] \
         if 'CUDAExecutionProvider' in available else ['CPUExecutionProvider']
 
-    print(f"[setup] ONNX Runtime providers: {providers}")
+    logger.info(f"ONNX Runtime providers: {providers}")
     session = ort.InferenceSession(str(model_path), providers=providers)
 
     # Inspection des I/O pour déduire la taille d'entrée
@@ -494,16 +515,16 @@ def run(args):
     else:
         model_input_size = args.input_size
 
-    print(f"[model] {model_path.name}")
-    print(f"  input:  {input_info.name} shape={input_info.shape}")
-    print(f"  output: {output_info.name} shape={output_info.shape}")
-    print(f"  taille d'entrée effective: {model_input_size}")
+    logger.info(f"Modèle: {model_path.name}")
+    logger.info(f"  input:  {input_info.name} shape={input_info.shape}")
+    logger.info(f"  output: {output_info.name} shape={output_info.shape}")
+    logger.info(f"  taille d'entrée effective: {model_input_size}")
 
     # --- Chargement de l'image avec PIL ---
     img_pil = Image.open(image_path).convert("RGB")
     img_rgb = np.asarray(img_pil)
     orig_h, orig_w = img_rgb.shape[:2]
-    print(f"[image] {image_path.name}  ({orig_w}x{orig_h})")
+    logger.info(f"Image: {image_path.name}  ({orig_w}x{orig_h})")
 
     # --- Prétraitement ---
     t0 = time.perf_counter()
@@ -530,11 +551,10 @@ def run(args):
         )
     t_post = time.perf_counter() - t0
 
-    print(f"[time] preprocess={t_pre*1000:.1f}ms  "
-          f"inference={t_inf*1000:.1f}ms  "
-          f"postprocess={t_post*1000:.1f}ms")
-    print(f"[infer] {len(detections)} détection(s) au-dessus du seuil "
-          f"conf={args.conf}")
+    logger.info(f"Timings: preprocess={t_pre*1000:.1f}ms  "
+                f"inference={t_inf*1000:.1f}ms  "
+                f"postprocess={t_post*1000:.1f}ms")
+    logger.info(f"{len(detections)} détection(s) au-dessus du seuil conf={args.conf}")
 
     # --- Préparation des noms de classes et couleurs ---
     # Priorité: --names (explicite) > CLASS_NAMES (si --nc correspond) > générique
@@ -543,20 +563,20 @@ def run(args):
         with open(args.names, 'r') as f:
             class_names = [line.strip() for line in f if line.strip()]
         if len(class_names) != args.nc:
-            print(f"[warn] {args.names} contient {len(class_names)} noms "
-                  f"mais --nc={args.nc}. Complétion par noms génériques.")
+            logger.warning(f"{args.names} contient {len(class_names)} noms "
+                           f"mais --nc={args.nc}. Complétion par noms génériques.")
             class_names = (class_names + [f"class_{i}" for i in range(args.nc)])[:args.nc]
     elif args.nc == len(CLASS_NAMES):
         # Le nombre de classes correspond à la constante globale (typiquement COCO à 80).
         # On utilise les noms natifs, bien plus lisibles que "class_0, class_1, ..."
         class_names = list(CLASS_NAMES)
-        print(f"[names] Utilisation de CLASS_NAMES (COCO, {len(CLASS_NAMES)} classes)")
+        logger.info(f"Utilisation de CLASS_NAMES (COCO, {len(CLASS_NAMES)} classes)")
     else:
         # Nombre de classes différent de CLASS_NAMES et pas de fichier --names fourni.
         class_names = [f"class_{i}" for i in range(args.nc)]
-        print(f"[names] --nc={args.nc} ne correspond pas à CLASS_NAMES "
-              f"({len(CLASS_NAMES)}). Noms génériques utilisés. "
-              f"Fournissez --names classes.txt pour personnaliser.")
+        logger.info(f"--nc={args.nc} ne correspond pas à CLASS_NAMES "
+                    f"({len(CLASS_NAMES)}). Noms génériques utilisés. "
+                    f"Fournissez --names classes.txt pour personnaliser.")
     colors = build_color_palette(args.nc)
 
     # --- Log console des détections ---
@@ -564,8 +584,8 @@ def run(args):
         x1, y1, x2, y2, conf, cls_id = det.tolist()
         cls_id = int(cls_id)
         name = class_names[cls_id] if cls_id < len(class_names) else f"class_{cls_id}"
-        print(f"  [{i}] {name:<20} conf={conf:.3f}  "
-              f"box=({x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f})")
+        logger.info(f"  [{i}] {name:<20} conf={conf:.3f}  "
+                    f"box=({x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f})")
 
     # --- Rendu ---
     result = render_detections(
@@ -580,13 +600,13 @@ def run(args):
         out_path = Path(args.output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         result.save(out_path)
-        print(f"[save] Image annotée sauvegardée: {out_path}")
+        logger.success(f"Image annotée sauvegardée: {out_path}")
 
     if args.show:
         try:
             result.show(title=image_path.name)
         except Exception as e:
-            print(f"[warn] Impossible d'afficher l'image ({e})")
+            logger.warning(f"Impossible d'afficher l'image ({e})")
 
     return detections, result
 
@@ -637,7 +657,12 @@ def main():
     parser.add_argument('--input-size', type=int, default=640,
                         help="Taille d'entrée du modèle (utilisée si ONNX dynamique)")
 
+    parser.add_argument('--log-level', type=str, default='INFO',
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                        help="Niveau de log loguru")
+
     args = parser.parse_args()
+    _setup_logging(level=args.log_level)
     run(args)
 
 

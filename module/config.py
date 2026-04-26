@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 import yaml
+from loguru import logger
 
 
 @dataclass
@@ -176,7 +177,7 @@ def load_train_config(path) -> TrainConfig:
     fields = {f for f in TrainConfig.__dataclass_fields__}
     unknown = set(data.keys()) - fields
     if unknown:
-        print(f"[config] Clés ignorées: {sorted(unknown)}")
+        logger.warning(f"Clés inconnues ignorées dans la config: {sorted(unknown)}")
     data = {k: v for k, v in data.items() if k in fields}
     return TrainConfig(**data)
 
@@ -186,7 +187,7 @@ def load_eval_config(path) -> EvalConfig:
     fields = {f for f in EvalConfig.__dataclass_fields__}
     unknown = set(data.keys()) - fields
     if unknown:
-        print(f"[config] Clés ignorées: {sorted(unknown)}")
+        logger.warning(f"Clés inconnues ignorées dans la config: {sorted(unknown)}")
     data = {k: v for k, v in data.items() if k in fields}
     return EvalConfig(**data)
 
@@ -196,7 +197,7 @@ def load_infer_config(path) -> InferConfig:
     fields = {f for f in InferConfig.__dataclass_fields__}
     unknown = set(data.keys()) - fields
     if unknown:
-        print(f"[config] Clés ignorées: {sorted(unknown)}")
+        logger.warning(f"Clés inconnues ignorées dans la config: {sorted(unknown)}")
     data = {k: v for k, v in data.items() if k in fields}
     return InferConfig(**data)
 
@@ -206,7 +207,7 @@ def load_export_config(path) -> ExportConfig:
     fields = {f for f in ExportConfig.__dataclass_fields__}
     unknown = set(data.keys()) - fields
     if unknown:
-        print(f"[config] Clés ignorées: {sorted(unknown)}")
+        logger.warning(f"Clés inconnues ignorées dans la config: {sorted(unknown)}")
     data = {k: v for k, v in data.items() if k in fields}
     return ExportConfig(**data)
 
@@ -216,6 +217,6 @@ def load_finetune_config(path) -> FinetuneConfig:
     fields = {f for f in FinetuneConfig.__dataclass_fields__}
     unknown = set(data.keys()) - fields
     if unknown:
-        print(f"[config] Clés ignorées: {sorted(unknown)}")
+        logger.warning(f"Clés inconnues ignorées dans la config: {sorted(unknown)}")
     data = {k: v for k, v in data.items() if k in fields}
     return FinetuneConfig(**data)

@@ -57,10 +57,11 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+from loguru import logger
 
 from module.config import FinetuneConfig, load_finetune_config
 from module.model import MyYolo
-from module.utils import print_model_summary
+from module.utils import print_model_summary, setup_logging
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ def load_source_checkpoint(cfg: FinetuneConfig, device: torch.device):
         state = ckpt['model']
     else:
         state = ckpt
-    print(f"[source] Chargé: {src_path}  ({len(state)} tenseurs)")
+    logger.info(f"Source chargée: {src_path}  ({len(state)} tenseurs)")
     return state
 
 
@@ -196,15 +197,15 @@ def transfer_weights(src_state: dict, new_model: MyYolo,
 
     # Rapport détaillé
     total = len(new_state)
-    print(f"[transfer] {len(loaded)}/{total} tenseurs chargés depuis le modèle source")
+    logger.info(f"Transfer: {len(loaded)}/{total} tenseurs chargés depuis le modèle source")
     if skipped_shape_mismatch:
-        print(f"[transfer] {len(skipped_shape_mismatch)} tenseurs réinitialisés "
-              f"(shape mismatch — attendu pour les têtes cls si "
-              f"old_num_classes={old_num_classes} -> new={new_num_classes}):")
+        logger.info(f"{len(skipped_shape_mismatch)} tenseurs réinitialisés "
+                    f"(shape mismatch — attendu pour les têtes cls si "
+                    f"old_num_classes={old_num_classes} -> new={new_num_classes}):")
         for key, old_shape, new_shape in skipped_shape_mismatch[:6]:
-            print(f"    · {key}: {old_shape} -> {new_shape}")
+            logger.info(f"    · {key}: {old_shape} -> {new_shape}")
         if len(skipped_shape_mismatch) > 6:
-            print(f"    · ... et {len(skipped_shape_mismatch) - 6} autres")
+            logger.info(f"    · ... et {len(skipped_shape_mismatch) - 6} autres")
 
     return loaded, skipped_shape_mismatch
 
@@ -235,7 +236,7 @@ def save_finetune_checkpoint(model: MyYolo, cfg: FinetuneConfig, output_path: Pa
     torch.save(state, tmp)
     tmp.replace(output_path)
     size_mb = output_path.stat().st_size / 1e6
-    print(f"[save] Nouveau modèle initialisé écrit: {output_path}  ({size_mb:.2f} MB)")
+    logger.success(f"Nouveau modèle initialisé écrit: {output_path}  ({size_mb:.2f} MB)")
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +259,9 @@ def run_finetune_build(cfg: FinetuneConfig):
       6. Sauvegarder le state_dict résultant.
     """
     device = torch.device(cfg.device)
-    print(f"[setup] device={device}")
-    print(f"[setup] version={cfg.version} | old_nc={cfg.old_num_classes} "
-          f"-> new_nc={cfg.new_num_classes}")
+    logger.info(f"device={device}")
+    logger.info(f"version={cfg.version} | old_nc={cfg.old_num_classes} "
+                f"-> new_nc={cfg.new_num_classes}")
 
     # --- Étape 1: instanciation du nouveau modèle ---
     # Le constructeur MyYolo construit le graphe complet et calibre les strides.
@@ -291,13 +292,11 @@ def run_finetune_build(cfg: FinetuneConfig):
     for i, cls_branch in enumerate(new_model.head.cls):
         init_cls_head_bias(cls_branch, cfg.new_num_classes, prior=cfg.cls_prior)
     bias_value = -math.log((1.0 - cfg.cls_prior) / cfg.cls_prior)
-    print(f"[init] Biais des 3 branches cls fixé à b = -log((1-π)/π) = "
-          f"{bias_value:.4f}  (π={cfg.cls_prior})")
+    logger.info(f"Biais des 3 branches cls fixé à b = -log((1-π)/π) = "
+                f"{bias_value:.4f}  (π={cfg.cls_prior})")
 
     # --- Étape 5: résumé du modèle ---
-    print("\n" + "=" * 80)
-    print("Résumé du modèle fine-tunable construit")
-    print("=" * 80)
+    logger.info("Résumé du modèle fine-tunable construit:")
     print_model_summary(
         new_model,
         input_size=(1, 3, cfg.image_size, cfg.image_size),
@@ -309,15 +308,13 @@ def run_finetune_build(cfg: FinetuneConfig):
     save_finetune_checkpoint(new_model, cfg, output_path)
 
     # Instructions pour la suite
-    print("\n[done] Modèle prêt pour le fine-tuning.")
-    print(f"       Pour lancer l'entraînement sur les nouvelles classes :")
-    print(f"         1. Mettez dans train.yaml :")
-    print(f"              resume: {output_path}")
-    print(f"              num_classes: {cfg.new_num_classes}")
-    print(f"              version: {cfg.version}")
-    print(f"         2. Optionnel : freeze_feature_layers: true "
-          f"(pour figer backbone + neck)")
-    print(f"         3. python -m module.train --config train.yaml")
+    logger.success("Modèle prêt pour le fine-tuning.")
+    logger.info("Pour lancer l'entraînement sur les nouvelles classes:")
+    logger.info(f"  1. Dans train.yaml : pretrained_weights: {output_path}")
+    logger.info(f"                       num_classes: {cfg.new_num_classes}")
+    logger.info(f"                       version: {cfg.version}")
+    logger.info("  2. Optionnel: freeze_feature_layers: true (pour figer backbone + neck)")
+    logger.info("  3. python -m module.train --config train.yaml")
 
     return new_model, output_path
 
@@ -333,8 +330,12 @@ def main():
     )
     parser.add_argument('--config', type=str, required=True,
                         help='Chemin vers finetune.yaml')
+    parser.add_argument('--log-level', type=str, default='INFO',
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                        help='Niveau de log loguru')
     args = parser.parse_args()
 
+    setup_logging(level=args.log_level)
     cfg = load_finetune_config(args.config)
     run_finetune_build(cfg)
 

@@ -21,6 +21,7 @@ La sortie ONNX attendue: (1, 4 + nc, num_anchors).
 
 import argparse
 import colorsys
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -28,6 +29,26 @@ from pathlib import Path
 import cv2
 import numpy as np
 import onnxruntime as ort
+from loguru import logger
+
+
+# ---------------------------------------------------------------------------
+# Configuration loguru locale (script standalone, pas d'accès au module)
+# ---------------------------------------------------------------------------
+def _setup_logging(level: str = "INFO"):
+    """Configure loguru avec un format compact pour ce script standalone.
+
+    Cohérent avec module/utils.py:setup_logging() — même format que les
+    autres scripts du projet pour une expérience uniforme.
+    """
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        format=("<green>{time:HH:mm:ss}</green> | "
+                "<level>{level: <8}</level> | <level>{message}</level>"),
+        level=level,
+        colorize=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +336,7 @@ def open_capture(source: str) -> cv2.VideoCapture:
         kind = f"file '{source}'"
     if not cap.isOpened():
         raise RuntimeError(f"Impossible d'ouvrir la source: {kind}")
-    print(f"[capture] Source ouverte: {kind}")
+    logger.info(f"Source ouverte: {kind}")
     return cap
 
 
@@ -332,7 +353,7 @@ def run(args):
     available = ort.get_available_providers()
     providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] \
         if 'CUDAExecutionProvider' in available else ['CPUExecutionProvider']
-    print(f"[setup] providers={providers}")
+    logger.info(f"providers={providers}")
 
     session = ort.InferenceSession(str(model_path), providers=providers)
     input_info = session.get_inputs()[0]
@@ -344,14 +365,14 @@ def run(args):
         input_size = input_shape[-1]
     else:
         input_size = args.input_size
-    print(f"[model] {model_path.name}  input_size={input_size}")
+    logger.info(f"Modèle: {model_path.name}  input_size={input_size}")
 
     # --- Source vidéo ---
     cap = open_capture(args.source)
     src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    print(f"[capture] {src_w}x{src_h} @ {src_fps:.1f} fps (source)")
+    logger.info(f"Source: {src_w}x{src_h} @ {src_fps:.1f} fps")
 
     # --- VideoWriter (optionnel) ---
     writer = None
@@ -362,25 +383,25 @@ def run(args):
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(str(out_path), fourcc, src_fps, (src_w, src_h))
         if not writer.isOpened():
-            print(f"[warn] VideoWriter n'a pas pu s'ouvrir pour {out_path}")
+            logger.warning(f"VideoWriter n'a pas pu s'ouvrir pour {out_path}")
             writer = None
         else:
-            print(f"[output] Enregistrement: {out_path}")
+            logger.info(f"Enregistrement: {out_path}")
 
     # --- Noms de classes + couleurs ---
     if args.names:
         with open(args.names, 'r') as f:
             class_names = [l.strip() for l in f if l.strip()]
         if len(class_names) != args.nc:
-            print(f"[warn] {args.names} contient {len(class_names)} noms "
-                  f"mais --nc={args.nc}. Complétion par noms génériques.")
+            logger.warning(f"{args.names} contient {len(class_names)} noms "
+                           f"mais --nc={args.nc}. Complétion par noms génériques.")
             class_names = (class_names + [f"class_{i}" for i in range(args.nc)])[:args.nc]
     elif args.nc == len(CLASS_NAMES):
         class_names = list(CLASS_NAMES)
-        print(f"[names] CLASS_NAMES (COCO, 80) utilisé")
+        logger.info("CLASS_NAMES (COCO, 80) utilisé")
     else:
         class_names = [f"class_{i}" for i in range(args.nc)]
-        print(f"[names] noms génériques (--nc={args.nc} ne matche pas COCO)")
+        logger.info(f"Noms génériques (--nc={args.nc} ne matche pas COCO)")
     colors = build_color_palette(args.nc)
 
     # --- Fenêtre d'affichage ---
@@ -399,7 +420,7 @@ def run(args):
 
             ok, frame = cap.read()
             if not ok or frame is None:
-                print("[capture] Fin du flux ou frame illisible.")
+                logger.info("Fin du flux ou frame illisible.")
                 break
             orig_h, orig_w = frame.shape[:2]
 
@@ -434,7 +455,7 @@ def run(args):
                 # Clé: q ou ESC pour quitter
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord('q'), 27):
-                    print("[exit] Quitté par l'utilisateur.")
+                    logger.info("Quitté par l'utilisateur.")
                     break
 
             frame_count += 1
@@ -447,8 +468,8 @@ def run(args):
 
     elapsed = time.perf_counter() - t_start
     avg_fps = frame_count / elapsed if elapsed > 0 else 0.0
-    print(f"[done] {frame_count} frames en {elapsed:.1f}s "
-          f"(moyenne {avg_fps:.1f} FPS)")
+    logger.success(f"{frame_count} frames en {elapsed:.1f}s "
+                   f"(moyenne {avg_fps:.1f} FPS)")
 
 
 # ---------------------------------------------------------------------------
@@ -479,8 +500,12 @@ def main():
                         help="Taille d'entrée du modèle (utile si ONNX dynamique)")
     parser.add_argument('--names', type=str, default=None,
                         help="Fichier .txt avec un nom par ligne")
+    parser.add_argument('--log-level', type=str, default='INFO',
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                        help="Niveau de log loguru")
     args = parser.parse_args()
 
+    _setup_logging(level=args.log_level)
     run(args)
 
 

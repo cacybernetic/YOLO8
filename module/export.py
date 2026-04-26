@@ -28,10 +28,11 @@ from typing import Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+from loguru import logger
 
 from module.config import ExportConfig, load_export_config
 from module.model import MyYolo
-from module.utils import print_model_summary
+from module.utils import print_model_summary, setup_logging
 
 
 # ---------------------------------------------------------------------------
@@ -79,10 +80,10 @@ def load_model(cfg: ExportConfig, device: torch.device) -> MyYolo:
     state = ckpt.get('model', ckpt) if isinstance(ckpt, dict) else ckpt
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing:
-        print(f"[weights] {len(missing)} clé(s) manquante(s) (normal si la tête a changé)")
+        logger.warning(f"{len(missing)} clé(s) manquante(s) (normal si la tête a changé)")
     if unexpected:
-        print(f"[weights] {len(unexpected)} clé(s) inattendue(s)")
-    print(f"[weights] Chargé: {weights_path}")
+        logger.warning(f"{len(unexpected)} clé(s) inattendue(s)")
+    logger.info(f"Poids chargés: {weights_path}")
 
     model.eval()
     for p in model.parameters():
@@ -109,13 +110,13 @@ def export_to_onnx(wrapper: YoloExportWrapper, dummy_input: torch.Tensor,
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"[export] opset={cfg.opset} | dynamic_batch={cfg.dynamic} | half={cfg.half}")
-    print(f"[export] input shape: {tuple(dummy_input.shape)}")
+    logger.info(f"Export: opset={cfg.opset} | dynamic_batch={cfg.dynamic} | half={cfg.half}")
+    logger.info(f"Input shape: {tuple(dummy_input.shape)}")
 
     # Test forward avant export pour avoir un message d'erreur clair si besoin
     with torch.no_grad():
         test_out = wrapper(dummy_input)
-    print(f"[export] output shape (ref): {tuple(test_out.shape)}")
+    logger.info(f"Output shape (référence PyTorch): {tuple(test_out.shape)}")
 
     # Force l'exporteur legacy (TorchScript) pour la stabilité. Le nouvel
     # exporteur "dynamo" (PyTorch >= 2.5) nécessite onnxscript comme dépendance
@@ -147,8 +148,8 @@ def export_to_onnx(wrapper: YoloExportWrapper, dummy_input: torch.Tensor,
             output_names=output_names,
             dynamic_axes=dynamic_axes,
         )
-    print(f"[export] Fichier ONNX écrit: {output_path} "
-          f"({output_path.stat().st_size / 1e6:.2f} MB)")
+    logger.success(f"Fichier ONNX écrit: {output_path} "
+                   f"({output_path.stat().st_size / 1e6:.2f} MB)")
 
 
 # ---------------------------------------------------------------------------
@@ -160,13 +161,13 @@ def check_onnx_graph(onnx_path: Path):
     try:
         import onnx
     except ImportError:
-        print("[check] onnx non installé — skipped. Installez avec: pip install onnx")
+        logger.warning("onnx non installé — check skipped. Installez avec: pip install onnx")
         return None
     model_onnx = onnx.load(str(onnx_path))
     onnx.checker.check_model(model_onnx)
-    print(f"[check] Graphe ONNX valide "
-          f"(ir_version={model_onnx.ir_version}, "
-          f"opset={model_onnx.opset_import[0].version})")
+    logger.success(f"Graphe ONNX valide "
+                   f"(ir_version={model_onnx.ir_version}, "
+                   f"opset={model_onnx.opset_import[0].version})")
     return model_onnx
 
 
@@ -176,21 +177,21 @@ def simplify_onnx(onnx_path: Path, onnx_model=None):
         import onnx
         import onnxsim
     except ImportError:
-        print("[simplify] onnxsim non installé — skipped. "
-              "Installez avec: pip install onnxsim")
+        logger.warning("onnxsim non installé — simplify skipped. "
+                       "Installez avec: pip install onnxsim")
         return
     if onnx_model is None:
         onnx_model = onnx.load(str(onnx_path))
     try:
         simplified, ok = onnxsim.simplify(onnx_model)
         if not ok:
-            print("[simplify] onnxsim a signalé un échec — graphe NON remplacé.")
+            logger.warning("onnxsim a signalé un échec — graphe NON remplacé.")
             return
         onnx.save(simplified, str(onnx_path))
         new_size = onnx_path.stat().st_size / 1e6
-        print(f"[simplify] Graphe simplifié et sauvegardé ({new_size:.2f} MB)")
+        logger.success(f"Graphe simplifié et sauvegardé ({new_size:.2f} MB)")
     except Exception as e:
-        print(f"[simplify] Échec: {e}")
+        logger.error(f"Simplify échec: {e}")
 
 
 def convert_to_fp16(onnx_path: Path):
@@ -199,17 +200,17 @@ def convert_to_fp16(onnx_path: Path):
         import onnx
         from onnxconverter_common import float16
     except ImportError:
-        print("[half] onnxconverter-common non installé — skipped. "
-              "Installez avec: pip install onnxconverter-common")
+        logger.warning("onnxconverter-common non installé — half skipped. "
+                       "Installez avec: pip install onnxconverter-common")
         return
     try:
         model = onnx.load(str(onnx_path))
         model_fp16 = float16.convert_float_to_float16(model, keep_io_types=False)
         onnx.save(model_fp16, str(onnx_path))
         new_size = onnx_path.stat().st_size / 1e6
-        print(f"[half] Conversion FP16 effectuée ({new_size:.2f} MB)")
+        logger.success(f"Conversion FP16 effectuée ({new_size:.2f} MB)")
     except Exception as e:
-        print(f"[half] Échec: {e}")
+        logger.error(f"Half échec: {e}")
 
 
 def verify_numerical(wrapper: YoloExportWrapper, onnx_path: Path,
@@ -218,8 +219,8 @@ def verify_numerical(wrapper: YoloExportWrapper, onnx_path: Path,
     try:
         import onnxruntime as ort
     except ImportError:
-        print("[verify] onnxruntime non installé — skipped. "
-              "Installez avec: pip install onnxruntime")
+        logger.warning("onnxruntime non installé — verify skipped. "
+                       "Installez avec: pip install onnxruntime")
         return True
 
     with torch.no_grad():
@@ -230,8 +231,8 @@ def verify_numerical(wrapper: YoloExportWrapper, onnx_path: Path,
     onnx_out = session.run(None, {'images': dummy_input.cpu().numpy()})[0]
 
     if torch_out.shape != onnx_out.shape:
-        print(f"[verify] ÉCHEC: shapes différentes "
-              f"(torch={torch_out.shape}, onnx={onnx_out.shape})")
+        logger.error(f"Verify ÉCHEC: shapes différentes "
+                     f"(torch={torch_out.shape}, onnx={onnx_out.shape})")
         return False
 
     abs_diff = np.abs(torch_out - onnx_out)
@@ -239,14 +240,15 @@ def verify_numerical(wrapper: YoloExportWrapper, onnx_path: Path,
     mean_diff = float(abs_diff.mean())
     ok = max_diff <= tolerance
 
-    status = 'OK' if ok else 'ÉCHEC'
-    print(f"[verify] {status} | max_abs_diff={max_diff:.2e} "
-          f"mean_abs_diff={mean_diff:.2e} (tol={tolerance:.0e})")
-
-    if not ok:
-        print(f"[verify] ⚠  L'écart numérique dépasse la tolérance. "
-              f"Cela peut venir de simplify=True sur certains opérateurs flottants. "
-              f"Réessayez avec simplify=False pour isoler la cause.")
+    if ok:
+        logger.success(f"Verify OK | max_abs_diff={max_diff:.2e} "
+                       f"mean_abs_diff={mean_diff:.2e} (tol={tolerance:.0e})")
+    else:
+        logger.error(f"Verify ÉCHEC | max_abs_diff={max_diff:.2e} "
+                     f"mean_abs_diff={mean_diff:.2e} (tol={tolerance:.0e})")
+        logger.warning("L'écart numérique dépasse la tolérance. "
+                       "Cela peut venir de simplify=True sur certains opérateurs flottants. "
+                       "Réessayez avec simplify=False pour isoler la cause.")
     return ok
 
 
@@ -257,7 +259,7 @@ def verify_numerical(wrapper: YoloExportWrapper, onnx_path: Path,
 def run_export(cfg: ExportConfig):
     device = torch.device(cfg.device if torch.cuda.is_available()
                           or not cfg.device.startswith('cuda') else 'cpu')
-    print(f"[setup] device={device}")
+    logger.info(f"device={device}")
 
     # 1) Modèle
     model = load_model(cfg, device)
@@ -292,7 +294,7 @@ def run_export(cfg: ExportConfig):
     if cfg.half:
         convert_to_fp16(output_path)
 
-    print(f"\n[done] Export terminé: {output_path}")
+    logger.success(f"Export terminé: {output_path}")
     return output_path
 
 
@@ -306,8 +308,12 @@ def main():
     )
     parser.add_argument('--config', type=str, required=True,
                         help='Chemin vers export.yaml')
+    parser.add_argument('--log-level', type=str, default='INFO',
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                        help='Niveau de log loguru')
     args = parser.parse_args()
 
+    setup_logging(level=args.log_level)
     cfg = load_export_config(args.config)
     run_export(cfg)
 

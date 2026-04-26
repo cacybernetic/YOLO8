@@ -22,11 +22,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+from loguru import logger
 
 from module.config import load_infer_config, InferConfig
 from module.dataset import letterbox
 from module.metrics import non_max_suppression
 from module.model import MyYolo
+from module.utils import setup_logging
 
 
 # ---------------------------------------------------------------------------
@@ -219,10 +221,10 @@ def run_inference(cfg: InferConfig, image_path: str,
     # --- Device ---
     device_str = cfg.device
     if device_str.startswith('cuda') and not torch.cuda.is_available():
-        print(f"[warn] CUDA indisponible, bascule sur CPU.")
+        logger.warning("CUDA indisponible, bascule sur CPU.")
         device_str = 'cpu'
     device = torch.device(device_str)
-    print(f"[setup] device={device}")
+    logger.info(f"device={device}")
 
     # --- Modèle ---
     model = MyYolo(version=cfg.version, num_classes=cfg.num_classes,
@@ -239,7 +241,7 @@ def run_inference(cfg: InferConfig, image_path: str,
     state = ckpt.get('model', ckpt) if isinstance(ckpt, dict) else ckpt
     model.load_state_dict(state, strict=False)
     model.eval()
-    print(f"[weights] Chargé: {weights_path}")
+    logger.info(f"Poids chargés: {weights_path}")
 
     # --- Image ---
     image_path = Path(image_path)
@@ -249,7 +251,7 @@ def run_inference(cfg: InferConfig, image_path: str,
     if orig is None:
         raise RuntimeError(f"Impossible de décoder l'image: {image_path}")
     orig_h, orig_w = orig.shape[:2]
-    print(f"[image] {image_path.name} ({orig_w}x{orig_h})")
+    logger.info(f"Image: {image_path.name} ({orig_w}x{orig_h})")
 
     # --- Préprocessing ---
     img, ratio, pad = letterbox(orig, new_shape=cfg.image_size)
@@ -272,8 +274,8 @@ def run_inference(cfg: InferConfig, image_path: str,
         detections[:, :4] = scale_boxes_to_original(
             detections[:, :4], ratio, pad, (orig_h, orig_w)
         )
-    print(f"[infer] {detections.shape[0]} détection(s) au-dessus du seuil "
-          f"conf={cfg.conf_threshold}")
+    logger.info(f"{detections.shape[0]} détection(s) au-dessus du seuil "
+                f"conf={cfg.conf_threshold}")
 
     # --- Noms de classes + palette ---
     if cfg.class_names and len(cfg.class_names) == cfg.num_classes:
@@ -281,8 +283,8 @@ def run_inference(cfg: InferConfig, image_path: str,
         class_names = [str(n) for n in cfg.class_names]
     else:
         if cfg.class_names is not None:
-            print(f"[warn] class_names a {len(cfg.class_names)} entrées mais "
-                  f"num_classes={cfg.num_classes}. Noms génériques utilisés.")
+            logger.warning(f"class_names a {len(cfg.class_names)} entrées mais "
+                           f"num_classes={cfg.num_classes}. Noms génériques utilisés.")
         class_names = [f"class_{i}" for i in range(cfg.num_classes)]
     colors = build_color_palette(cfg.num_classes)
 
@@ -300,27 +302,27 @@ def run_inference(cfg: InferConfig, image_path: str,
         x1, y1, x2, y2, conf, cls_id = det.tolist()
         cls_id = int(cls_id)
         name = str(class_names[cls_id]) if cls_id < len(class_names) else f"class_{cls_id}"
-        print(f"  [{i}] {name:<20} conf={conf:.3f} "
-              f"box=({x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f})")
+        logger.info(f"  [{i}] {name:<20} conf={conf:.3f} "
+                    f"box=({x1:.1f}, {y1:.1f}, {x2:.1f}, {y2:.1f})")
 
     # --- Sauvegarde ---
     if save_path:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(save_path), annotated)
-        print(f"[save] Image annotée écrite: {save_path}")
+        logger.success(f"Image annotée écrite: {save_path}")
 
     # --- Affichage ---
     if show:
         window = f"YOLOv8 - {image_path.name}"
         try:
             cv2.imshow(window, annotated)
-            print("[show] Appuyez sur une touche dans la fenêtre pour fermer.")
+            logger.info("Appuyez sur une touche dans la fenêtre pour fermer.")
             cv2.waitKey(0)
             cv2.destroyAllWindows()
         except cv2.error as e:
-            print(f"[warn] Affichage impossible ({e}). "
-                  f"Utilisez --save out.jpg pour récupérer le résultat.")
+            logger.warning(f"Affichage impossible ({e}). "
+                           f"Utilisez --save out.jpg pour récupérer le résultat.")
 
     return detections, annotated
 
@@ -346,8 +348,12 @@ def main():
                         help="(optionnel) override du seuil de confiance")
     parser.add_argument('--iou', type=float, default=None,
                         help="(optionnel) override du seuil IoU pour NMS")
+    parser.add_argument('--log-level', type=str, default='INFO',
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                        help='Niveau de log loguru')
     args = parser.parse_args()
 
+    setup_logging(level=args.log_level)
     cfg = load_infer_config(args.config)
 
     # Overrides CLI
