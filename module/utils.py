@@ -42,9 +42,9 @@ def setup_logging(level: str = "INFO",
     if show_time:
         fmt_console = ("<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
                        "<level>{level: <8}</level> | "
-                       "<level>{message}</level>")
+                       "{message}")
     else:
-        fmt_console = "<level>{level: <8}</level> | <level>{message}</level>"
+        fmt_console = "<level>{level: <8}</level> | {message}"
 
     # `colorize=True` active les couleurs ANSI si la sortie est un TTY.
     # `enqueue=False` car le main process est seul à logger ; les workers
