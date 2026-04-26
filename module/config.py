@@ -51,6 +51,11 @@ class TrainConfig:
     save_best_metric: str = 'map50'  # métrique pour sélectionner le "best"
     auto_resume: bool = True          # si True et `resume` non défini, charge le dernier epoch_*.pt
 
+    # Historique d'entraînement
+    # Le graphique 4 subplots (avg_loss, avg_box, avg_cls, avg_dfl) train/val
+    # est régénéré à la fin de chaque epoch à ce chemin.
+    history_plot_path: str = 'checkpoints/training_history.png'
+
     # Divers
     device: str = 'cuda'       # 'cuda' | 'cpu' | 'cuda:0'
     seed: int = 0

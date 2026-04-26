@@ -27,7 +27,7 @@ from module.dataset import YOLODataset
 from module.lossfn import ComputeLoss
 from module.metrics import MetricAccumulator, non_max_suppression
 from module.model import MyYolo
-from module.utils import print_model_summary
+from module.utils import print_model_summary, plot_training_history
 
 
 # ---------------------------------------------------------------------------
@@ -510,30 +510,71 @@ def build_val_targets(images, targets_dict, image_size, device):
 
 
 @torch.no_grad()
-def validate(model, loader, device, image_size, conf_threshold, iou_threshold):
+def validate(model, loader, device, image_size, conf_threshold, iou_threshold,
+             loss_fn=None):
+    """Évaluation sur le set de validation.
+
+    Calcule:
+      - les métriques de détection (Precision, Recall, mAP@0.5, mAP@0.5:0.95)
+      - les pertes box / cls / dfl / total si `loss_fn` est fourni
+
+    Pour pouvoir tracer les courbes train/val des pertes en parallèle, on doit
+    obligatoirement passer une `loss_fn` ici (sinon les pertes val resteront à 0).
+    Le calcul est fait avec `torch.no_grad()` car on est en évaluation, mais
+    `loss_fn` reste utilisable car `ComputeLoss` n'a pas besoin du graphe pour
+    calculer la valeur scalaire de la perte (on n'appelle jamais `.backward()`).
+    """
     model.eval()
     accumulator = MetricAccumulator(device=device)
+
+    # Accumulateurs de pertes pondérées par batch_size (cohérent avec train_one_epoch)
+    losses_sum = {'box': 0.0, 'cls': 0.0, 'dfl': 0.0, 'total': 0.0}
+    n_samples = 0
 
     pbar = tqdm(loader, desc="[val]", leave=False, dynamic_ncols=True)
     for images, targets, _paths in pbar:
         images = images.to(device, non_blocking=True)
-        # En eval la tête renvoie (inference_tensor, raw_outputs)
+        # En eval la tête renvoie (inference_tensor, raw_outputs).
+        # `raw_outputs` est exactement ce dont la loss a besoin.
         out = model(images)
         if isinstance(out, tuple):
-            inference_out = out[0]
+            inference_out, raw_outputs = out
         else:
-            inference_out = out
+            inference_out, raw_outputs = out, None
 
+        # --- Calcul des pertes sur la validation ---
+        if loss_fn is not None and raw_outputs is not None:
+            try:
+                lb, lc, ld = loss_fn(raw_outputs, targets)
+                bs = images.size(0)
+                losses_sum['box']   += float(lb.item()) * bs
+                losses_sum['cls']   += float(lc.item()) * bs
+                losses_sum['dfl']   += float(ld.item()) * bs
+                losses_sum['total'] += float((lb + lc + ld).item()) * bs
+                n_samples += bs
+            except Exception as e:
+                pbar.write(f"[val] échec calcul loss sur ce batch: {e}")
+
+        # --- NMS + accumulation des métriques de détection ---
         preds = non_max_suppression(
             inference_out,
             confidence_threshold=conf_threshold,
             iou_threshold=iou_threshold
         )
-
         targets_per_image = build_val_targets(images, targets, image_size, device)
         accumulator.update(preds, targets_per_image)
 
     results = accumulator.compute()
+
+    # Moyennes des pertes (mêmes clés que train_one_epoch pour symétrie)
+    if n_samples > 0:
+        for k, v in losses_sum.items():
+            results[k] = v / n_samples
+    else:
+        # Pas de loss_fn fourni: on remplit avec 0 pour rester compatible
+        for k in losses_sum:
+            results[k] = 0.0
+
     return results
 
 
@@ -689,6 +730,32 @@ def main():
         print(f"[train] grad_accumulation_steps={cfg.grad_accumulation_steps} "
               f"| effective batch size = {effective_bs}")
 
+    # Historique des pertes train/val pour le tracé en fin d'epoch.
+    # Stocké dans un dict simple, sérialisable, restauré depuis le checkpoint
+    # en cas de reprise pour conserver la continuité visuelle.
+    history = {
+        'epochs_train': [], 'train_loss': [], 'train_box': [],
+        'train_cls': [],    'train_dfl':  [],
+        'epochs_val':   [], 'val_loss':   [], 'val_box':   [],
+        'val_cls':     [],  'val_dfl':    [],
+    }
+    # Si on reprend depuis un checkpoint qui contenait déjà un historique,
+    # on le récupère pour que le graphique reste cohérent.
+    if startup_mode == 'resume' and resume_path is not None:
+        try:
+            ckpt_for_history = torch.load(resume_path, map_location='cpu',
+                                          weights_only=False)
+            if isinstance(ckpt_for_history, dict) and 'history' in ckpt_for_history:
+                history = ckpt_for_history['history']
+                print(f"[history] Restauré depuis le checkpoint "
+                      f"({len(history.get('epochs_train', []))} epochs train, "
+                      f"{len(history.get('epochs_val', []))} epochs val)")
+        except Exception as e:
+            print(f"[history] Impossible de restaurer l'historique ({e}). "
+                  f"Repart d'un historique vide.")
+
+    history_path = Path(cfg.history_plot_path)
+
     for epoch in range(epoch_start, cfg.epochs):
         print(f"\n=== Epoch {epoch+1}/{cfg.epochs} ===")
         train_stats = train_one_epoch(
@@ -699,18 +766,46 @@ def main():
             freeze_feature_layers=cfg.freeze_feature_layers,
         )
 
+        # On ajoute toujours l'epoch d'entraînement à l'historique,
+        # même si on ne valide pas à cette epoch (val_interval > 1).
+        history['epochs_train'].append(epoch + 1)
+        history['train_loss'].append(float(train_stats.get('total', 0.0)))
+        history['train_box'].append(float(train_stats.get('box', 0.0)))
+        history['train_cls'].append(float(train_stats.get('cls', 0.0)))
+        history['train_dfl'].append(float(train_stats.get('dfl', 0.0)))
+
         val_metrics = {}
         if (epoch + 1) % cfg.val_interval == 0:
             val_metrics = validate(
                 model, val_loader, device, cfg.image_size,
-                cfg.conf_threshold, cfg.iou_threshold
+                cfg.conf_threshold, cfg.iou_threshold,
+                loss_fn=loss_fn,    # IMPORTANT: passe loss_fn pour calcul des pertes val
             )
             print(f"  [val] P={val_metrics['precision']:.4f} "
                   f"R={val_metrics['recall']:.4f} "
                   f"mAP@0.5={val_metrics['map50']:.4f} "
-                  f"mAP@0.5:0.95={val_metrics['map']:.4f}")
+                  f"mAP@0.5:0.95={val_metrics['map']:.4f} "
+                  f"| total={val_metrics.get('total', 0):.4f} "
+                  f"(box {val_metrics.get('box', 0):.4f} "
+                  f"cls {val_metrics.get('cls', 0):.4f} "
+                  f"dfl {val_metrics.get('dfl', 0):.4f})")
 
-        # Checkpoint d'epoch
+            # Accumulation de l'historique val (uniquement aux epochs où on valide)
+            history['epochs_val'].append(epoch + 1)
+            history['val_loss'].append(float(val_metrics.get('total', 0.0)))
+            history['val_box'].append(float(val_metrics.get('box', 0.0)))
+            history['val_cls'].append(float(val_metrics.get('cls', 0.0)))
+            history['val_dfl'].append(float(val_metrics.get('dfl', 0.0)))
+
+        # Tracé du graphique d'historique (régénéré à chaque epoch).
+        # Encapsulé dans try/except pour ne JAMAIS casser l'entraînement à cause
+        # d'un problème de matplotlib (filesystem plein, backend manquant, etc.)
+        try:
+            plot_training_history(history, history_path)
+        except Exception as e:
+            print(f"  [plot] Échec du tracé de l'historique: {e}")
+
+        # Checkpoint d'epoch (inclut l'historique pour la continuité en cas de reprise)
         state = {
             'epoch': epoch,
             'model': model.state_dict(),
@@ -719,6 +814,7 @@ def main():
             'config': cfg.__dict__,
             'train_stats': train_stats,
             'val_metrics': val_metrics,
+            'history': history,
         }
         epoch_ckpt = ckpt_dir / f"epoch_{epoch+1:04d}.pt"
         save_checkpoint(state, epoch_ckpt)
@@ -735,6 +831,7 @@ def main():
                 print(f"  [best] Nouveau meilleur {cfg.save_best_metric}={best_metric:.4f} -> {best_path}")
 
     print("\n[done] Entraînement terminé.")
+    print(f"  Graphique d'historique: {history_path}")
     if best_metric > -float('inf'):
         print(f"  Best {cfg.save_best_metric}: {best_metric:.4f}")
 

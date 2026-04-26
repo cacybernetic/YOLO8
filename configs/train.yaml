@@ -81,6 +81,12 @@ max_checkpoints: 5                       # rotation FIFO: garde les N plus réce
 save_best_metric: map50                  # map50 | map | precision | recall
 auto_resume: true                        # charge automatiquement le dernier epoch_*.pt si `resume` est null
 
+# --- Historique d'entraînement ---
+# Le graphique 4 subplots (avg_loss, avg_box, avg_cls, avg_dfl) train/val est
+# régénéré à la fin de chaque epoch. Permet de surveiller la convergence et
+# détecter le sur-apprentissage en cours de route.
+history_plot_path: checkpoints/training_history.png
+
 # --- Divers ---
 device: cuda
 seed: 0
