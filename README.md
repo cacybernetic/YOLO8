@@ -31,7 +31,8 @@ A complete YOLOv8 object detection pipeline implemented from scratch in PyTorch 
   - [3. Fine-tune on new classes](#3-fine-tune-on-new-classes)
   - [4. Export to ONNX](#4-export-to-onnx)
   - [5. Run inference on an image](#5-run-inference-on-an-image)
-  - [6. Run inference in Rust](#6-run-inference-in-rust)
+  - [6. Standalone ONNX scripts (`predict.py` and `live.py`)](#6-standalone-onnx-scripts-predictpy-and-livepy)
+  - [7. Run inference in Rust](#7-run-inference-in-rust)
 - [Configuration files](#configuration-files)
 - [To contribute](#to-contribute)
 - [Licence](#licence)
@@ -284,7 +285,63 @@ Useful options:
 - `--conf 0.4` — override the confidence threshold
 - `--iou 0.5` — override the NMS IoU threshold
 
-### 6. Run inference in Rust
+### 6. Standalone ONNX scripts (`predict.py` and `live.py`)
+
+Two helper scripts at the project root let you run a pre-trained ONNX model
+without any dependency on the `yolov8` package — handy for quick demos,
+deployment, or running the model on a machine where you only need
+`onnxruntime` and a couple of small libraries.
+
+Both scripts share the same `--model`, `--nc`, `--conf`, `--iou`, and
+`--names` options, and accept `--log-level` to control verbosity. If the
+model has 80 classes, the standard COCO names are used automatically;
+otherwise pass a `--names classes.txt` file (one class name per line).
+
+#### `predict.py` — single image inference
+
+Runs on **CPU only** by default (uses GPU if `onnxruntime-gpu` is installed).
+Pure `numpy` + `Pillow` for the image pipeline, no OpenCV or PyTorch needed.
+
+```bash
+python predict.py \
+  --model  weights/best.onnx \
+  --nc     80 \
+  --image  samples/photo.jpg \
+  --output result.jpg
+```
+
+Common options:
+- `--conf 0.25` — minimum confidence threshold (default 0.25)
+- `--iou 0.45` — NMS IoU threshold (default 0.45)
+- `--show` — display the annotated image after inference
+- `--names classes.txt` — file with one class name per line
+
+#### `live.py` — real-time webcam or video file
+
+Streams predictions in real time on a webcam feed or video file using OpenCV
+for capture and display. Shows a live FPS counter and detection count, and
+can record the annotated stream to disk.
+
+```bash
+# Webcam (index 0)
+python live.py --model weights/best.onnx --nc 80 --source 0
+
+# Video file
+python live.py --model weights/best.onnx --nc 80 --source path/to/video.mp4
+
+# Headless mode + save the annotated stream
+python live.py --model weights/best.onnx --nc 80 \
+  --source path/to/video.mp4 --output annotated.mp4 --no-show
+```
+
+`--source` accepts either an integer (webcam index) or a path to a video file.
+Press `q` or `ESC` in the display window to quit.
+
+Required Python packages for these two scripts: `numpy`, `onnxruntime`,
+`Pillow` (for `predict.py`), `opencv-python` (for `live.py`). They are already
+included in the project dependencies, so nothing more to install.
+
+### 7. Run inference in Rust
 
 **On a single image:**
 
