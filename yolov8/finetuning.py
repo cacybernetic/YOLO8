@@ -59,9 +59,9 @@ import torch
 import torch.nn as nn
 from loguru import logger
 
-from module.config import FinetuneConfig, load_finetune_config
-from module.model import MyYolo
-from module.utils import print_model_summary, setup_logging
+from yolov8.config import FinetuneConfig, load_finetune_config
+from yolov8.model import MyYolo
+from yolov8.utils import print_model_summary, setup_logging
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +314,7 @@ def run_finetune_build(cfg: FinetuneConfig):
     logger.info(f"                       num_classes: {cfg.new_num_classes}")
     logger.info(f"                       version: {cfg.version}")
     logger.info("  2. Optionnel: freeze_feature_layers: true (pour figer backbone + neck)")
-    logger.info("  3. python -m module.train --config train.yaml")
+    logger.info("  3. python -m yolov8.train --config configs/train.yaml")
 
     return new_model, output_path
 

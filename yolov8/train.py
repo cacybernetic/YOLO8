@@ -2,7 +2,7 @@
 Script principal d'entraînement YOLOv8.
 
 Usage :
-    python -m module.train --config module/train.yaml
+    python -m yolov8.train --config configs/train.yaml
 
 Gestion des checkpoints :
   - Sauvegarde à chaque fin d'epoch (model, optimizer, scheduler, epoch, best_metric)
@@ -12,7 +12,6 @@ Gestion des checkpoints :
 
 import argparse
 import math
-import os
 import random
 import time
 from pathlib import Path
@@ -22,14 +21,14 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from module.config import load_train_config, TrainConfig
-from module.dataset import YOLODataset
-from module.lossfn import ComputeLoss
-from module.metrics import MetricAccumulator, non_max_suppression
-from module.model import MyYolo
+from yolov8.config import load_train_config, TrainConfig
+from yolov8.dataset import YOLODataset
+from yolov8.lossfn import ComputeLoss
+from yolov8.metrics import MetricAccumulator, non_max_suppression
+from yolov8.model import MyYolo
 from loguru import logger
 
-from module.utils import print_model_summary, plot_training_history, setup_logging
+from yolov8.utils import print_model_summary, plot_training_history, setup_logging
 
 
 # ---------------------------------------------------------------------------

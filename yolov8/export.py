@@ -2,7 +2,7 @@
 Export d'un modèle YOLOv8 entraîné au format ONNX.
 
 Usage :
-    python -m module.export --config module/export.yaml
+    python -m yolov8.export --config configs/export.yaml
 
 Le script :
   1. Charge le checkpoint .pt indiqué dans la config
@@ -30,9 +30,9 @@ import torch
 import torch.nn as nn
 from loguru import logger
 
-from module.config import ExportConfig, load_export_config
-from module.model import MyYolo
-from module.utils import print_model_summary, setup_logging
+from yolov8.config import ExportConfig, load_export_config
+from yolov8.model import MyYolo
+from yolov8.utils import print_model_summary, setup_logging
 
 
 # ---------------------------------------------------------------------------

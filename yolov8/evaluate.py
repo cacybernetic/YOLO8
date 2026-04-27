@@ -20,7 +20,7 @@ Conformément au document `yolov8_metriques.tex`, ce script calcule :
     - Matrice de confusion (N+1 x N+1, normalisée et brute)
 
 Usage :
-    python -m module.evaluate --config module/eval.yaml
+    python -m yolov8.evaluate --config configs/eval.yaml
 """
 
 import argparse
@@ -32,11 +32,11 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from loguru import logger
 
-from module.config import load_eval_config, EvalConfig
-from module.dataset import YOLODataset
-from module.lossfn import ComputeLoss
-from module.metrics import non_max_suppression
-from module.metrics_eval import (
+from yolov8.config import load_eval_config, EvalConfig
+from yolov8.dataset import YOLODataset
+from yolov8.lossfn import ComputeLoss
+from yolov8.metrics import non_max_suppression
+from yolov8.metrics_eval import (
     box_iou,
     build_confusion_matrix,
     build_global_csv,
@@ -49,9 +49,9 @@ from module.metrics_eval import (
     plot_f1_confidence,
     plot_pr_curves,
 )
-from module.model import MyYolo
-from module.train import build_val_targets
-from module.utils import print_model_summary, setup_logging
+from yolov8.model import MyYolo
+from yolov8.train import build_val_targets
+from yolov8.utils import print_model_summary, setup_logging
 
 
 # ---------------------------------------------------------------------------

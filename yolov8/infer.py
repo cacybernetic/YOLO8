@@ -2,9 +2,9 @@
 Script d'inférence YOLOv8 sur une image.
 
 Usage :
-    python -m module.infer --config module/infer.yaml --image path/vers/image.jpg
-    python -m module.infer --config module/infer.yaml --image img.jpg --save out.jpg
-    python -m module.infer --config module/infer.yaml --image img.jpg --no-show
+    python -m yolov8.infer --config configs/infer.yaml --image path/vers/image.jpg
+    python -m yolov8.infer --config configs/infer.yaml --image img.jpg --save out.jpg
+    python -m yolov8.infer --config configs/infer.yaml --image img.jpg --no-show
 
 Le script :
   1. Charge le checkpoint spécifié dans la config
@@ -24,11 +24,11 @@ import numpy as np
 import torch
 from loguru import logger
 
-from module.config import load_infer_config, InferConfig
-from module.dataset import letterbox
-from module.metrics import non_max_suppression
-from module.model import MyYolo
-from module.utils import setup_logging
+from yolov8.config import load_infer_config, InferConfig
+from yolov8.dataset import letterbox
+from yolov8.metrics import non_max_suppression
+from yolov8.model import MyYolo
+from yolov8.utils import setup_logging
 
 
 # ---------------------------------------------------------------------------
