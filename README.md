@@ -87,6 +87,27 @@ A companion Rust binary lets you run ONNX inference at native speed, either on a
 
 ## Installation
 
+### Quick install (without cloning)
+
+You can install the package directly from GitHub using either `pip` or `uv`. This gives you immediate access to all CLI tools (`yltrain`, `yleval`, `ylinfer`, `ylft`, `ylexport`) without downloading the full repository.
+
+**With pip** (works in any Python environment, no extra tools needed):
+
+```bash
+pip install git+https://github.com/cacybernetic/YOLO8
+```
+
+**With uv** (faster, after installing `uv`):
+
+```bash
+uv pip install git+https://github.com/cacybernetic/YOLO8
+```
+
+After installation, you can run the commands directly (see [Usage](#usage)) — just make sure you have the required configuration YAML files (download them from the [configs/](configs/) folder if needed).
+
+> **Note for contributors**: if you plan to modify the code or contribute, please follow the full local installation instructions below.
+
+
 ### Python — Linux
 
 **1. Install `uv` (fast Python package manager)**
