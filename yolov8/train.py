@@ -613,12 +613,12 @@ def main():
 
     train_loader = DataLoader(
         train_ds, batch_size=cfg.batch_size, shuffle=True,
-        num_workers=cfg.num_workers, pin_memory=True,
+        num_workers=cfg.num_workers, pin_memory=(cfg.device.startswith('cuda')),
         collate_fn=YOLODataset.collate_fn, drop_last=True,
     )
     val_loader = DataLoader(
         val_ds, batch_size=cfg.batch_size, shuffle=False,
-        num_workers=cfg.num_workers, pin_memory=True,
+        num_workers=cfg.num_workers, pin_memory=(cfg.device.startswith('cuda')),
         collate_fn=YOLODataset.collate_fn, drop_last=False,
     )
     num_steps_per_epoch = max(len(train_loader), 1)
