@@ -71,8 +71,8 @@ column_limit = 120
 where = ["src"]
 
 [project.scripts]
-yltrain = "yolov8.train:main"
-yleval = "yolov8.evaluate:main"
-ylinfer = "yolov8.infer:main"
-ylft = "yolov8.finetuning:main"
-ylexport = "yolov8.export:main"
+yltrain = "yolov8.entrypoints.train:main"
+yleval = "yolov8.entrypoints.evaluate:main"
+ylinfer = "yolov8.entrypoints.infer:main"
+ylft = "yolov8.entrypoints.finetuning:main"
+ylexport = "yolov8.entrypoints.export:main"
