@@ -28,7 +28,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Operating System :: OS Independent",
 ]
-keywords = ["object-detection", "yolov8", "conv-net", "iou", "deep-learning"]
+keywords = ["object-detection", "yolov8", "conv-net", "iou", "deep-learning", "computer-vision"]
 dependencies = [
 	"pyyaml==6.0.3",
     "loguru==0.7.3",
