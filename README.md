@@ -37,6 +37,8 @@ A complete YOLOv8 object detection pipeline implemented from scratch in PyTorch 
 - [Configuration files](#configuration-files)
 - [To contribute](#to-contribute)
 - [Licence](#licence)
+- [Acknowledgments](#acknowledgments)
+- [References](#references)
 - [Contact](#contact)
 
 ---
@@ -398,6 +400,83 @@ Contributions are welcome! Please follow these steps:
 ## Licence
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+ 
+This project was built while learning the inner workings of YOLOv8. A huge
+thank-you to **[dtdo90](https://github.com/dtdo90)** for the excellent
+educational repository
+[**dtdo90/yolov8_detection**](https://github.com/dtdo90/yolov8_detection)
+and the accompanying **[YouTube walkthrough](https://www.youtube.com/watch?v=6zQP0L-ph0M)**,
+both of which served as the primary reference for understanding the architecture
+(backbone, neck, head).
+Many implementation choices in this project — the structure of the `Detect`
+head, the integration of the
+DFL into the box regression, and the way the training targets are assigned —
+are directly inspired by their work.
+
+If you find this project useful, please also consider starring the original
+repository as a sign of appreciation for the educational content that made it
+possible.
+
+## References
+ 
+The implementation is based on the following papers and resources:
+
+### Loss function and assignment strategy
+ 
+- **TAL — Task-Aligned Assigner** — Feng, C., Zhong, Y., Gao, Y., Scott, M. R.,
+  & Huang, W. (2021). *TOOD: Task-Aligned One-stage Object Detection*.
+  ICCV 2021.
+  [arXiv:2108.07755](https://arxiv.org/abs/2108.07755)
+- **DFL — Distribution Focal Loss** — Li, X., Wang, W., Wu, L., Chen, S., Hu, X.,
+  Li, J., Tang, J., & Yang, J. (2020). *Generalized Focal Loss: Learning
+  Qualified and Distributed Bounding Boxes for Dense Object Detection*.
+  NeurIPS 2020.
+  [arXiv:2006.04388](https://arxiv.org/abs/2006.04388)
+- **CIoU Loss** — Zheng, Z., Wang, P., Liu, W., Li, J., Ye, R., & Ren, D. (2020).
+  *Distance-IoU Loss: Faster and Better Learning for Bounding Box
+  Regression*. AAAI 2020.
+  [arXiv:1911.08287](https://arxiv.org/abs/1911.08287)
+- **Focal Loss** — Lin, T.-Y., Goyal, P., Girshick, R., He, K., & Dollár, P.
+  (2017). *Focal Loss for Dense Object Detection*. ICCV 2017. Used as the
+  reference for the bias initialization of the new classification heads
+  during fine-tuning (`b = -log((1-π)/π)` with π=0.01).
+  [arXiv:1708.02002](https://arxiv.org/abs/1708.02002)
+
+### Architecture components
+ 
+- **CSPNet** — Wang, C.-Y., Liao, H.-Y. M., Wu, Y.-H., Chen, P.-Y., Hsieh, J.-W.,
+  & Yeh, I.-H. (2020). *CSPNet: A New Backbone that can Enhance Learning
+  Capability of CNN*. CVPRW 2020. Foundation of the C2f blocks used in the
+  backbone.
+  [arXiv:1911.11929](https://arxiv.org/abs/1911.11929)
+- **PAN — Path Aggregation Network** — Liu, S., Qi, L., Qin, H., Shi, J., &
+  Jia, J. (2018). *Path Aggregation Network for Instance Segmentation*.
+  CVPR 2018. Used as the basis for the multi-scale neck.
+  [arXiv:1803.01534](https://arxiv.org/abs/1803.01534)
+- **SPPF** — He, K., Zhang, X., Ren, S., & Sun, J. (2015). *Spatial Pyramid
+  Pooling in Deep Convolutional Networks for Visual Recognition*. The Fast
+  variant (SPPF) used in this project is the standard YOLOv5/v8 design.
+  [arXiv:1406.4729](https://arxiv.org/abs/1406.4729)
+
+### Evaluation metrics
+ 
+- **COCO evaluation protocol** — Lin, T.-Y., Maire, M., Belongie, S., Hays, J.,
+  Perona, P., Ramanan, D., Dollár, P., & Zitnick, C. L. (2014).
+  *Microsoft COCO: Common Objects in Context*. ECCV 2014. Source of the
+  101-point AP interpolation and the IoU thresholds 0.5:0.05:0.95.
+  [arXiv:1405.0312](https://arxiv.org/abs/1405.0312)
+- **Survey on detection metrics** — Padilla, R., Netto, S. L., & da Silva, E. A. B.
+  (2020). *A Survey on Performance Metrics for Object-Detection
+  Algorithms*. IWSSIP 2020.
+  [DOI](https://doi.org/10.1109/IWSSIP48289.2020.9145130)
+
+### Educational reference
+ 
+- **dtdo90/yolov8_detection** — DT Do (2024). Implementation of the YOLOv8
+  detection model with an accompanying YouTube tutorial.
+
 
 ## Contact
 
