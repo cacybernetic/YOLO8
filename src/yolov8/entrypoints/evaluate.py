@@ -252,7 +252,7 @@ def evaluate(cfg: EvalConfig):
                      image_size=cfg.image_size, augment=False)
     loader = DataLoader(
         ds, batch_size=cfg.batch_size, shuffle=False,
-        num_workers=cfg.num_workers, pin_memory=True,
+        num_workers=cfg.num_workers, pin_memory=(cfg.device.startswith('cuda')),
         collate_fn=YOLODataset.collate_fn, drop_last=False,
     )
     logger.info(f"Données: {cfg.split}={len(ds)}")
