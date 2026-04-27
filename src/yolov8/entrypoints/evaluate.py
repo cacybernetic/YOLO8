@@ -50,8 +50,7 @@ from yolov8.metrics_eval import (
     plot_pr_curves,
 )
 from yolov8.model import MyYolo
-from yolov8.train import build_val_targets
-from yolov8.utils import print_model_summary, setup_logging
+from yolov8.utils import print_model_summary, setup_logging, build_val_targets
 
 
 # ---------------------------------------------------------------------------

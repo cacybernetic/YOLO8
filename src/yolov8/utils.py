@@ -147,6 +147,31 @@ def _print_native_summary(model: nn.Module):
     logger.info(f"Non-trainable:    {total-trainable:>12,}")
 
 
+def build_val_targets(images, targets_dict, image_size, device):
+    """Reconstruit, par image, un tenseur GT (n_gt, 5) = [cls, x1, y1, x2, y2] en pixels."""
+    bs = images.size(0)
+    idx = targets_dict['idx']
+    cls = targets_dict['cls']
+    box = targets_dict['box']  # (N, 4) cx, cy, w, h normalisé
+
+    per_image = []
+    for i in range(bs):
+        mask = (idx == i)
+        if mask.sum() == 0:
+            per_image.append(torch.zeros((0, 5), device=device))
+            continue
+        c = cls[mask].view(-1, 1)
+        b = box[mask]
+        cx, cy, w, h = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+        x1 = (cx - w / 2) * image_size
+        y1 = (cy - h / 2) * image_size
+        x2 = (cx + w / 2) * image_size
+        y2 = (cy + h / 2) * image_size
+        gt = torch.stack((c.view(-1), x1, y1, x2, y2), dim=1).to(device)
+        per_image.append(gt)
+    return per_image
+
+
 def plot_training_history(history: dict, output_path):
     """Trace l'historique des pertes train/val sur 4 subplots.
 
