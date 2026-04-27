@@ -4,7 +4,7 @@ Chargement et validation de la configuration YAML.
 Utilisé par train.py et evaluate.py pour parser train.yaml / eval.yaml.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any
 

@@ -15,7 +15,6 @@ La collate_fn produit le dict attendu par ComputeLoss : {'idx', 'cls', 'box'}.
 """
 
 import math
-import os
 from pathlib import Path
 import random
 
