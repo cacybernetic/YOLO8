@@ -411,12 +411,11 @@ and the accompanying **[YouTube walkthrough](https://www.youtube.com/watch?v=6zQ
 both of which served as the primary reference for understanding the architecture
 (backbone, neck, head).
 Many implementation choices in this project — the structure of the `Detect`
-head, the integration of the
-DFL into the box regression, and the way the training targets are assigned —
-are directly inspired by their work.
+head, and the integration of the
+DFL into the box regression — are directly inspired by its work.
 
-If you find this project useful, please also consider starring the original
-repository as a sign of appreciation for the educational content that made it
+If you find this project useful, please consider giving the **dtdo90** repository a star
+as a token of appreciation for the educational content that made it
 possible.
 
 ## References
