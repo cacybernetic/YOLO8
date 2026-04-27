@@ -21,6 +21,7 @@ A complete YOLOv8 object detection pipeline implemented from scratch in PyTorch 
 - [Features](#features)
 - [Project structure](#project-structure)
 - [Installation](#installation)
+  - [Quick install](#quick-install-without-cloning)
   - [Python — Linux](#python--linux)
   - [Python — Windows](#python--windows)
   - [Rust (optional)](#rust-optional)
