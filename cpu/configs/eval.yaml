@@ -1,0 +1,37 @@
+# ============================================================================
+# YOLOv8 evaluation configuration (CPU)
+# ============================================================================
+# Outputs go to <output_dir>/<run_name>/eval[i]/
+#   results.csv, per_class.csv, plotes/, renders/, logs/,
+#   config_used.yaml
+
+run_name: yolov8
+output_dir: runs
+device: cpu
+seed: 0
+
+weights: runs/yolov8/train/weights/best.pt
+
+batch_size: 16
+num_workers: 2
+conf_threshold: 0.001       # low threshold: the mAP needs every candidate
+iou_threshold: 0.7          # NMS IoU threshold
+n_renders: 8                # number of example images in renders/
+
+dataset:
+  test_path: /path/to/dataset/test.zip
+  use_hdf5: false
+  test_h5: data/test.h5
+  validate: true
+  cache: true
+  max_test_samples: null
+  image_size: 640
+  class_names: null         # fallback when data.yaml is missing
+
+model:
+  version: n
+
+loss:
+  box_gain: 7.5
+  cls_gain: 0.5
+  dfl_gain: 1.5

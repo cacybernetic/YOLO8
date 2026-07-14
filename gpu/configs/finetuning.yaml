@@ -1,0 +1,19 @@
+# ============================================================================
+# Fine-tunable checkpoint build configuration (ylft)
+# ============================================================================
+# Transfers backbone, neck, box branches and DFL from a pretrained
+# model, and re-initializes the classification heads for a new class
+# count. Then train with model.pretrained_weights in train.yaml.
+
+pretrained_weights: runs/yolov8/train/weights/best.pt
+old_num_classes: 80
+new_num_classes: 10
+version: n                  # must match the source model
+image_size: 640
+
+output_weights: weights/finetune_init.pt
+
+cls_prior: 0.01             # Focal Loss prior for the new cls bias
+strict_backbone_load: true
+
+device: cpu

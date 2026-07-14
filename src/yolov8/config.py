@@ -1,236 +1,298 @@
-"""
-Chargement et validation de la configuration YAML.
+"""Load and validate the YAML configuration files.
 
-Utilisé par train.py et evaluate.py pour parser train.yaml / eval.yaml.
+The train/eval configs are nested: they contain a `dataset` block, a
+`model` block, and so on. Unknown keys are reported with a warning and
+ignored, so comments and extra fields never break a run.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 import yaml
 from loguru import logger
 
 
+# ---------------------------------------------------------------------------
+# Nested blocks
+# ---------------------------------------------------------------------------
+
 @dataclass
-class TrainConfig:
-    # Dataset
-    dataset_dir: str
-    num_classes: int
+class AugmentConfig:
+    enabled: bool = True
+    hsv_h: float = 0.015
+    hsv_s: float = 0.7
+    hsv_v: float = 0.4
+    degrees: float = 0.0
+    translate: float = 0.1
+    scale: float = 0.5
+    shear: float = 0.0
+    perspective: float = 0.0
+    flip_lr: float = 0.5
+    flip_ud: float = 0.0
+    mosaic: float = 1.0
+    mixup: float = 0.0
+    cutout: float = 0.0
+    cutout_n_max: int = 4
+    cutout_size_max: float = 0.25
+    blur: float = 0.0
+    noise: float = 0.0
+    grayscale: float = 0.0
+    # Turn off mosaic and mixup during the last N epochs (0 = never).
+    close_mosaic: int = 10
+
+    def params(self):
+        """Augmentation values as a plain dict for the Augmenter."""
+        return {f.name: getattr(self, f.name) for f in fields(self)
+                if f.name != 'close_mosaic'}
+
+
+@dataclass
+class DatasetConfig:
+    train_path: str = ''
+    test_path: str = ''
+    use_hdf5: bool = False
+    train_h5: str = 'data/train.h5'
+    test_h5: str = 'data/test.h5'
+    # Pre-flight scan: drop corrupt or invalid entries up front.
+    validate: bool = True
+    # Read and write the <name>.cache.json scan cache.
+    cache: bool = True
+    max_train_samples: Optional[int] = None
+    max_test_samples: Optional[int] = None
+    # Fraction of the test set used for the per-epoch validation.
+    val_prob: float = 0.5
     image_size: int = 640
-    augment: bool = True
-    augment_params: Optional[Dict[str, Any]] = None  # voir DEFAULT_AUGMENT_PARAMS
-    check_images: bool = True     # vérifie l'intégrité des images au démarrage (lent mais évite crashs)
-    # Split de validation utilisé pendant l'entraînement (sélection du best).
-    # None = auto: utilise 'val/' s'il existe, sinon 'test/' avec un warning
-    # (sélectionner le modèle sur le test set est une fuite méthodologique).
-    val_split: Optional[str] = None
-    close_mosaic: int = 10        # désactive mosaic+mixup sur les N dernières epochs (0 = jamais)
+    # Fallback class names when the dataset has no data.yaml.
+    class_names: Optional[List[str]] = None
+    augment: AugmentConfig = field(default_factory=AugmentConfig)
 
-    # Modèle
-    version: str = 'n'        # 'n', 's', 'm', 'l', 'x'
-    resume: Optional[str] = None  # chemin d'un checkpoint à reprendre (poids + optimizer + epoch)
-    pretrained_weights: Optional[str] = None  # chemin de poids initiaux (poids seulement, epoch=0)
-    freeze_feature_layers: bool = False   # gèle backbone + neck (fine-tuning seulement tête)
 
-    # Optimisation
+@dataclass
+class ModelConfig:
+    version: str = 'n'
+    # Start a NEW training from these weights (fine tuning or transfer
+    # learning). Ignored when a checkpoint is resumed.
+    pretrained_weights: Optional[str] = None
+    freeze_feature_layers: bool = False
+
+
+@dataclass
+class OptimizationConfig:
     epochs: int = 100
     batch_size: int = 16
     num_workers: int = 4
+    optimizer: str = 'sgd'      # 'sgd' | 'adam' | 'adamw'
     max_lr: float = 0.01
     min_lr: float = 0.0001
-    warmup_epochs: float = 3.0
-    warmup_momentum: float = 0.8   # momentum de départ pendant le warmup
-    warmup_bias_lr: float = 0.1    # LR de départ des biais pendant le warmup
     momentum: float = 0.937
     weight_decay: float = 0.0005
-    scheduler: str = 'cosine'  # 'cosine' ou 'linear'
+    scheduler: str = 'cosine'   # 'cosine' | 'linear'
+    warmup_epochs: float = 3.0
+    warmup_momentum: float = 0.8
+    warmup_bias_lr: float = 0.1
     grad_clip: float = 10.0
-    grad_accumulation_steps: int = 1   # accumulation de gradient sur N micro-batches
-    amp: bool = True              # mixed precision (autocast + GradScaler) sur CUDA
-    ema: bool = True              # Exponential Moving Average des poids
+    # Gradient accumulation over N micro batches.
+    grad_accum: int = 1
+    amp: bool = True
+    ema: bool = True
     ema_decay: float = 0.9999
     ema_tau: float = 2000.0
-    patience: int = 0             # early stopping: stop si pas d'amélioration
-                                  # de save_best_metric pendant N validations (0 = désactivé)
-    cudnn_benchmark: bool = True  # autotuning cuDNN (shapes fixes -> gain de perf)
+    # Early stopping: stop after N validations without improvement
+    # of the best metric (0 = disabled).
+    patience: int = 0
+    cudnn_benchmark: bool = True
 
-    # Loss gains
+
+@dataclass
+class LossConfig:
     box_gain: float = 7.5
     cls_gain: float = 0.5
     dfl_gain: float = 1.5
 
-    # Checkpoints
-    checkpoint_dir: str = 'checkpoints'
-    max_checkpoints: int = 5
-    save_best_metric: str = 'map50'  # métrique pour sélectionner le "best"
-    auto_resume: bool = True          # si True et `resume` non défini, charge le dernier epoch_*.pt
+    def gains(self):
+        return {'box': self.box_gain, 'cls': self.cls_gain,
+                'dfl': self.dfl_gain}
 
-    # Historique d'entraînement
-    # Le graphique 4 subplots (avg_loss, avg_box, avg_cls, avg_dfl) train/val
-    # est régénéré à la fin de chaque epoch à ce chemin.
-    history_plot_path: str = 'checkpoints/training_history.png'
 
-    # Divers
-    device: str = 'cuda'       # 'cuda' | 'cpu' | 'cuda:0'
-    seed: int = 0
-    log_interval: int = 10     # afficher la loss toutes les N itérations
-    val_interval: int = 1      # valider toutes les N epochs
+@dataclass
+class CheckpointConfig:
+    # Save a checkpoint every N optimizer steps (train phase) or every
+    # N batches (val and test phases).
+    ckpt_step: int = 200
+    max_checkpoint: int = 5
+    # Reuse the last run folder and its latest checkpoint.
+    resume: bool = True
+    # Metric used to pick the best model (map50, map, precision,
+    # recall).
+    best_metric: str = 'map50'
 
-    # Validation / NMS
+
+@dataclass
+class ValidationConfig:
+    interval: int = 1
     conf_threshold: float = 0.001
     iou_threshold: float = 0.7
+
+
+# ---------------------------------------------------------------------------
+# Top level configs
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TrainConfig:
+    run_name: str = 'yolov8'
+    output_dir: str = 'runs'
+    device: str = 'cuda'
+    seed: int = 0
+    log_interval: int = 10
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    optimization: OptimizationConfig = field(
+        default_factory=OptimizationConfig)
+    loss: LossConfig = field(default_factory=LossConfig)
+    checkpoint: CheckpointConfig = field(
+        default_factory=CheckpointConfig)
+    validation: ValidationConfig = field(
+        default_factory=ValidationConfig)
 
 
 @dataclass
 class EvalConfig:
-    dataset_dir: str
-    num_classes: int
-    weights: str               # chemin du checkpoint à évaluer
-    version: str = 'n'
-    image_size: int = 640
+    run_name: str = 'yolov8'
+    output_dir: str = 'runs'
+    device: str = 'cuda'
+    seed: int = 0
+    weights: str = ''
     batch_size: int = 16
     num_workers: int = 4
-    device: str = 'cuda'
     conf_threshold: float = 0.001
     iou_threshold: float = 0.7
-    split: str = 'test'        # 'test' ou 'train'
-    output_dir: str = 'results'      # dossier de sortie pour CSVs et figures
-    class_names: Optional[list] = None  # noms des classes (optionnel, pour les plots)
-    # Loss gains pour calcul des losses sur val (mêmes valeurs qu'en train)
-    box_gain: float = 7.5
-    cls_gain: float = 0.5
-    dfl_gain: float = 1.5
+    # Number of example prediction images written to renders/.
+    n_renders: int = 8
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    loss: LossConfig = field(default_factory=LossConfig)
 
 
 @dataclass
-class InferConfig:
-    weights: str                              # chemin du checkpoint à charger
-    num_classes: int
-    version: str = 'n'
-    image_size: int = 640
-    device: str = 'cuda'
-    conf_threshold: float = 0.25              # plus élevé qu'en eval: on veut des boites visibles
-    iou_threshold: float = 0.45
-    class_names: Optional[list] = None        # liste des noms de classes (len == num_classes)
-    line_thickness: int = 2
-    font_scale: float = 0.5
-    box_opacity: float = 0.75                 # opacité globale du graphisme des boites [0, 1]
-    save_path: Optional[str] = None           # si défini, sauvegarde l'image annotée
-    show: bool = True                         # affiche avec cv2.imshow
+class Hdf5BuildConfig:
+    """Config of buildds: turn a dataset into ready-to-train HDF5."""
+    device: str = 'cpu'
+    # Number of extra augmented copies stored per train sample.
+    augmented_copies: int = 0
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
 
 @dataclass
 class ExportConfig:
-    # Modèle
-    weights: str                              # chemin du checkpoint (.pt) à convertir
-    num_classes: int
+    weights: str = ''
+    num_classes: int = 80
     version: str = 'n'
     image_size: int = 640
-
-    # Sortie
     output_path: str = 'weights/best.onnx'
-
-    # Options d'export ONNX
-    opset: int = 17                           # version d'opset ONNX (17 = bon défaut moderne)
-    dynamic: bool = True                      # batch size dynamique
-    simplify: bool = True                     # simplifier le graphe avec onnxsim (si installé)
-    half: bool = False                        # export FP16 (utile GPU / mobile)
-
-    # Validation post-export
-    check: bool = True                        # vérifie le modèle ONNX avec onnx.checker
-    verify: bool = True                       # compare sortie PyTorch vs ONNX Runtime (si installé)
-    verify_tolerance: float = 1e-3            # tolérance max sur l'écart absolu
-
-    # Divers
-    device: str = 'cpu'                       # 'cpu' recommandé pour l'export, plus stable
+    opset: int = 17
+    dynamic: bool = True
+    simplify: bool = True
+    half: bool = False
+    check: bool = True
+    verify: bool = True
+    verify_tolerance: float = 1e-3
+    device: str = 'cpu'
 
 
 @dataclass
 class FinetuneConfig:
-    """Configuration pour la construction d'un modèle fine-tunable.
+    """Build a fine-tunable checkpoint from pretrained weights.
 
-    Le fine-tuning YOLOv8 s'appuie sur trois principes (cf. littérature transfer learning
-    et pratiques Ultralytics):
-      - Le backbone et le neck extraient des features génériques, réutilisables
-        sur de nouvelles classes. On les conserve tels quels.
-      - Les branches de régression de boites (`box`) et le DFL produisent
-        des coordonnées géométriques, indépendantes du nombre de classes.
-      - Seules les branches de classification (`cls`) dépendent de num_classes
-        et doivent être réinitialisées avec la nouvelle taille de sortie.
+    Backbone, neck, box branches and DFL do not depend on the number
+    of classes: they are transferred. Only the classification branches
+    are re-initialized for the new class count, with the Focal Loss
+    bias prior b = -log((1 - pi) / pi), pi = cls_prior.
     """
-    # Modèle source
-    pretrained_weights: str              # chemin du .pt pré-entraîné
-    old_num_classes: int                 # nombre de classes du modèle source
-    new_num_classes: int                 # nombre de classes du modèle cible
-    version: str = 'n'                   # doit matcher celui du modèle source
+    pretrained_weights: str = ''
+    old_num_classes: int = 80
+    new_num_classes: int = 80
+    version: str = 'n'
     image_size: int = 640
-
-    # Sortie
     output_weights: str = 'weights/finetune_init.pt'
-
-    # Options d'initialisation
-    cls_prior: float = 0.01              # prior pour l'init du biais cls (cf. Focal Loss)
-    strict_backbone_load: bool = True    # exige que backbone+neck chargent sans clé manquante
-
-    # Divers
+    cls_prior: float = 0.01
+    strict_backbone_load: bool = True
     device: str = 'cpu'
 
 
-def _load_yaml(path):
+# ---------------------------------------------------------------------------
+# Generic loader
+# ---------------------------------------------------------------------------
+
+def _from_dict(cls, data, path='config'):
+    """Build a dataclass from a dict, warning on unknown keys."""
+    known = {f.name: f for f in fields(cls)}
+    unknown = set(data.keys()) - set(known)
+    if unknown:
+        logger.warning(
+            f"Unknown keys ignored in {path}: {sorted(unknown)}")
+
+    kwargs = {}
+    for name, f in known.items():
+        if name not in data or data[name] is None:
+            continue
+        value = data[name]
+        if is_dataclass(f.type) or _is_dataclass_field(cls, name):
+            sub_cls = _field_dataclass(cls, name)
+            if isinstance(value, dict):
+                kwargs[name] = _from_dict(
+                    sub_cls, value, path=f"{path}.{name}")
+                continue
+        kwargs[name] = value
+    return cls(**kwargs)
+
+
+def _field_dataclass(cls, name):
+    """Return the dataclass type of a field, or None."""
+    for f in fields(cls):
+        if f.name == name and is_dataclass(f.type):
+            return f.type
+    return None
+
+
+def _is_dataclass_field(cls, name):
+    return _field_dataclass(cls, name) is not None
+
+
+def config_to_dict(cfg):
+    """Turn a (possibly nested) dataclass into a plain dict."""
+    out = {}
+    for f in fields(cfg):
+        value = getattr(cfg, f.name)
+        out[f.name] = config_to_dict(value) if is_dataclass(value) \
+            else value
+    return out
+
+
+def _load_yaml(path) -> Dict[str, Any]:
     path = Path(path)
     if not path.exists():
-        raise FileNotFoundError(f"Fichier de config introuvable: {path}")
+        raise FileNotFoundError(f"Config file not found: {path}")
     with open(path, 'r') as f:
         return yaml.safe_load(f) or {}
 
 
 def load_train_config(path) -> TrainConfig:
-    data = _load_yaml(path)
-    # Filtre les clés inconnues pour plus de robustesse
-    fields = {f for f in TrainConfig.__dataclass_fields__}
-    unknown = set(data.keys()) - fields
-    if unknown:
-        logger.warning(f"Clés inconnues ignorées dans la config: {sorted(unknown)}")
-    data = {k: v for k, v in data.items() if k in fields}
-    return TrainConfig(**data)
+    return _from_dict(TrainConfig, _load_yaml(path))
 
 
 def load_eval_config(path) -> EvalConfig:
-    data = _load_yaml(path)
-    fields = {f for f in EvalConfig.__dataclass_fields__}
-    unknown = set(data.keys()) - fields
-    if unknown:
-        logger.warning(f"Clés inconnues ignorées dans la config: {sorted(unknown)}")
-    data = {k: v for k, v in data.items() if k in fields}
-    return EvalConfig(**data)
+    return _from_dict(EvalConfig, _load_yaml(path))
 
 
-def load_infer_config(path) -> InferConfig:
-    data = _load_yaml(path)
-    fields = {f for f in InferConfig.__dataclass_fields__}
-    unknown = set(data.keys()) - fields
-    if unknown:
-        logger.warning(f"Clés inconnues ignorées dans la config: {sorted(unknown)}")
-    data = {k: v for k, v in data.items() if k in fields}
-    return InferConfig(**data)
+def load_hdf5_build_config(path) -> Hdf5BuildConfig:
+    return _from_dict(Hdf5BuildConfig, _load_yaml(path))
 
 
 def load_export_config(path) -> ExportConfig:
-    data = _load_yaml(path)
-    fields = {f for f in ExportConfig.__dataclass_fields__}
-    unknown = set(data.keys()) - fields
-    if unknown:
-        logger.warning(f"Clés inconnues ignorées dans la config: {sorted(unknown)}")
-    data = {k: v for k, v in data.items() if k in fields}
-    return ExportConfig(**data)
+    return _from_dict(ExportConfig, _load_yaml(path))
 
 
 def load_finetune_config(path) -> FinetuneConfig:
-    data = _load_yaml(path)
-    fields = {f for f in FinetuneConfig.__dataclass_fields__}
-    unknown = set(data.keys()) - fields
-    if unknown:
-        logger.warning(f"Clés inconnues ignorées dans la config: {sorted(unknown)}")
-    data = {k: v for k, v in data.items() if k in fields}
-    return FinetuneConfig(**data)
+    return _from_dict(FinetuneConfig, _load_yaml(path))

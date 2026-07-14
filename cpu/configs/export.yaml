@@ -1,0 +1,21 @@
+# ============================================================================
+# ONNX export configuration (ylexport)
+# ============================================================================
+
+weights: runs/yolov8/train/weights/best.pt
+num_classes: 80
+version: n
+image_size: 640
+
+output_path: weights/best.onnx
+
+opset: 17                  # modern default
+dynamic: true              # dynamic batch size
+simplify: true             # simplify the graph with onnxsim
+half: false                # FP16 export (GPU / mobile)
+
+check: true                # validate the graph with onnx.checker
+verify: true               # compare PyTorch vs ONNX Runtime outputs
+verify_tolerance: 0.001
+
+device: cpu                # cpu is the most stable for export

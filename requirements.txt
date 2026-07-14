@@ -6,6 +6,7 @@ pillow==12.1.1
 opencv-python==4.13.0.92
 tqdm==4.67.3
 torchinfo==1.8.0
+h5py>=3.10
 
 torch==2.8.0
 torchvision==0.23.0

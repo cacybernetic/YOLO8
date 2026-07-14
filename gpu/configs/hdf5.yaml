@@ -1,0 +1,30 @@
+# ============================================================================
+# HDF5 dataset build configuration (ylbuild)
+# ============================================================================
+# Turns a zip/folder dataset into ready-to-train train.h5 / test.h5.
+# Training then reads pre-computed samples with `use_hdf5: true`.
+
+device: cpu
+
+# Extra augmented copies stored per TRAIN sample (0 = none).
+# The test split is never augmented.
+augmented_copies: 0
+
+dataset:
+  train_path: /path/to/dataset/train.zip
+  test_path: /path/to/dataset/test.zip
+  train_h5: data/train.h5
+  test_h5: data/test.h5
+  validate: true
+  cache: true
+  image_size: 640
+  augment:
+    enabled: true           # used only for the augmented copies
+    hsv_h: 0.015
+    hsv_s: 0.7
+    hsv_v: 0.4
+    translate: 0.1
+    scale: 0.5
+    flip_lr: 0.5
+    mosaic: 1.0
+    mixup: 0.0

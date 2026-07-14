@@ -7,11 +7,14 @@
 ![](https://img.shields.io/badge/PyTorch-2.8.0-orange)
 ![](https://img.shields.io/badge/Rust-edition--2024-b7410e)
 ![](https://img.shields.io/badge/LICENSE-MIT-%2300557f)
-![](https://img.shields.io/badge/latest-2026--04--27-green)
+![](https://img.shields.io/badge/latest-2026--07--15-green)
 
 </div>
 
-A complete YOLOv8 object detection pipeline implemented from scratch in PyTorch — training, evaluation, fine-tuning, ONNX export, and inference. Bonus: a Rust binary for fast ONNX inference on static images or live webcam feed.
+A complete YOLOv8 object detection pipeline implemented from scratch in
+PyTorch — fault-tolerant training, evaluation, fine-tuning, HDF5 dataset
+builds, ONNX export, and inference. Bonus: a Rust binary for fast ONNX
+inference on static images or live webcam feed.
 
 <br>
 
@@ -21,20 +24,19 @@ A complete YOLOv8 object detection pipeline implemented from scratch in PyTorch 
 - [Features](#features)
 - [Project structure](#project-structure)
 - [Installation](#installation)
-  - [Quick install](#quick-install-without-cloning)
-  - [Python — Linux](#python--linux)
-  - [Python — Windows](#python--windows)
-  - [Rust (optional)](#rust-optional)
 - [Dataset format](#dataset-format)
 - [Usage](#usage)
-  - [1. Train](#1-train)
-  - [2. Evaluate](#2-evaluate)
-  - [3. Fine-tune on new classes](#3-fine-tune-on-new-classes)
-  - [4. Export to ONNX](#4-export-to-onnx)
-  - [5. Run inference on an image](#5-run-inference-on-an-image)
-  - [6. Standalone ONNX scripts (`predict.py` and `live.py`)](#6-standalone-onnx-scripts-predictpy-and-livepy)
-  - [7. Run inference in Rust](#7-run-inference-in-rust)
+  - [1. Build HDF5 datasets (optional)](#1-build-hdf5-datasets-optional)
+  - [2. Train](#2-train)
+  - [3. Evaluate](#3-evaluate)
+  - [4. Fine-tune on new classes](#4-fine-tune-on-new-classes)
+  - [5. Export to ONNX](#5-export-to-onnx)
+  - [6. Run inference](#6-run-inference)
+  - [7. Standalone ONNX scripts](#7-standalone-onnx-scripts-predictpy-and-livepy)
+  - [8. Run inference in Rust](#8-run-inference-in-rust)
 - [Configuration files](#configuration-files)
+- [Fault-tolerant training](#fault-tolerant-training)
+- [Documentation](#documentation)
 - [To contribute](#to-contribute)
 - [Licence](#licence)
 - [Acknowledgments](#acknowledgments)
@@ -45,358 +47,364 @@ A complete YOLOv8 object detection pipeline implemented from scratch in PyTorch 
 
 ## Description
 
-This project is a full re-implementation of YOLOv8 in pure PyTorch — no Ultralytics dependency. It is designed to be readable, hackable, and easy to run on your own dataset. Every component (backbone, neck, head, loss, metrics, augmentations) is written from scratch and documented.
+This project is a full re-implementation of YOLOv8 in pure PyTorch — no
+Ultralytics dependency. It is designed to be readable, hackable, and easy
+to run on your own dataset. Every component (backbone, neck, head, loss,
+metrics, augmentations, trainer) is written from scratch and documented.
 
-A companion Rust binary lets you run ONNX inference at native speed, either on a single image or in real-time from a webcam.
+A companion Rust binary lets you run ONNX inference at native speed,
+either on a single image or in real-time from a webcam.
 
 ## Features
 
-- **Train from scratch** on any dataset in YOLO format.
-- **Fine-tune** a pre-trained model on a new set of classes in a few lines of config.
-- **Evaluate** with full COCO-style metrics: mAP@0.5, mAP@0.5:0.95, Precision, Recall, F1, confusion matrix, PR curves.
-- **Export** to ONNX (with optional FP16, graph simplification, and numerical verification).
-- **Inference** on images from Python with a futuristic box renderer.
-- **Rust binary** for fast ONNX inference on images or live webcam (`src/main.rs`).
-- Rich augmentations: **mosaic** (with `close_mosaic`), HSV jitter, affine transforms, MixUp, Cutout, blur, noise, grayscale.
-- Cosine and linear LR schedulers with full warm-up (LR, per-group bias LR, momentum).
-- **EMA** (Exponential Moving Average) weights for validation and `best.pt`.
-- **Mixed precision** (AMP) training on CUDA.
-- Detection-head bias initialization (focal-loss prior) for stable early training.
-- Gradient accumulation, automatic checkpoint rotation, early stopping (`patience`), training history plots.
+- **Datasets as folders or zip archives**, with a `data.yaml` class list,
+  a pre-flight validation scan and a JSON scan cache
+  (`train.cache.json`) for instant restarts.
+- **HDF5 dataset builds** (`buildh5ds`): pre-compute letterboxed (and
+  optionally augmented) samples into `train.h5` / `test.h5` and train
+  straight from them (`use_hdf5: true`).
+- **Fault-tolerant training**: a checkpoint every `ckpt_step` optimizer
+  steps (and during val/test passes) captures the model, optimizer,
+  EMA, AMP scaler, dataloader positions, partial meters and RNG states.
+  Training resumes mid-epoch without ever seeing a sample twice.
+- **Resumable DataLoader adapter**: the shuffle order is a pure function
+  of (seed + epoch), so the exact epoch order is rebuilt after a crash.
+- **Structured run folders**: `runs/<name>/train`, `train2`, ... and
+  `eval`, `eval2`, ... each with `weights/`, `checkpoints/`, `plotes/`,
+  `logs/`, `history.csv` and `config_used.yaml`.
+- **Validation from the test set**: `val_prob` takes a deterministic
+  fraction of the test split for per-epoch validation; the final
+  evaluation runs on the full test set.
+- Rich augmentations: **mosaic** (with `close_mosaic`), HSV jitter,
+  affine transforms, MixUp, Cutout, blur, noise, grayscale.
+- Cosine and linear LR schedulers with full warm-up (LR, per-group bias
+  LR, momentum); SGD / Adam / AdamW.
+- **EMA** weights for validation and `best.pt`; **AMP** on CUDA;
+  gradient accumulation with end-of-epoch flush; early stopping.
+- **Full COCO-style evaluation**: mAP@0.5, mAP@0.5:0.95, macro/micro
+  P/R/F1, PR and F1-confidence curves, confusion matrices, prediction
+  renders.
+- **Export** to ONNX (with optional FP16, graph simplification, and
+  numerical verification) and a fully standalone ONNX inference script.
+- Unit tests for the model, loss, metrics, dataset, adapter, schedulers
+  and the trainer (including mid-epoch resume).
 
 ## Project structure
 
 ```
 .
-├── yolov8/
-│   ├── model.py          # Backbone, Neck, Head, MyYolo
+├── src/yolov8/
+│   ├── modules/          # Conv, C2f, SPPF, DFL, Backbone, Neck, Head
+│   ├── model.py          # MyYolo (backbone + neck + head)
 │   ├── lossfn.py         # TAL assigner + CIoU + DFL + BCE loss
-│   ├── dataset.py        # YOLODataset with augmentations
-│   ├── metrics.py        # NMS, mAP, MetricAccumulator
-│   ├── metrics_eval.py   # Full evaluation suite (curves, CSV, confusion matrix)
-│   ├── config.py         # Dataclasses + YAML loaders
-│   ├── utils.py          # Logging, model summary, history plot
+│   ├── dataset/
+│   │   ├── sources.py    # folder and zip dataset sources
+│   │   ├── scanner.py    # validation scan + JSON cache
+│   │   ├── transforms.py # letterbox, tensor conversion
+│   │   ├── augment.py    # all augmentations + Augmenter
+│   │   ├── yolo_dataset.py
+│   │   ├── hdf5_store.py # HDF5 build + read
+│   │   ├── adapter.py    # resumable DataLoader adapter
+│   │   └── factory.py    # dataset construction from the config
+│   ├── metrics/          # NMS, mAP, per-class AP, confusion matrix
+│   ├── training/
+│   │   ├── optimizers.py # param groups, SGD/Adam/AdamW, freezing
+│   │   ├── lr_schedulers.py
+│   │   ├── ema.py
+│   │   ├── meters.py     # resumable loss meters
+│   │   ├── checkpoints.py# naming, rotation, RNG capture
+│   │   ├── runs.py       # runs/<name>/train[i] folders
+│   │   └── trainer.py    # the fault-tolerant training loop
+│   ├── logging.py        # loguru setup + torchinfo summary
+│   ├── plotting.py       # history and evaluation figures
+│   ├── onnx_export.py
+│   ├── config.py         # nested dataclass configs + YAML loaders
 │   └── entrypoints/
-│       ├── train.py      # Training loop
-│       ├── evaluate.py   # Full evaluation
-│       ├── infer.py      # Single-image inference
-│       ├── export.py     # ONNX export
-│       └── finetuning.py # Build a fine-tunable checkpoint
-├── configs/
-│   ├── train.yaml
-│   ├── eval.yaml
-│   ├── infer.yaml
-│   ├── export.yaml
-│   └── finetune.yaml
-└── src/
-    └── main.rs           # Rust ONNX inference binary
+│       ├── buildds.py    # build HDF5 datasets
+│       ├── train.py      # train + val + final test
+│       ├── evaluate.py   # full evaluation
+│       ├── exportmodel.py# ONNX export
+│       ├── inference.py  # standalone ONNX inference
+│       └── finetuning.py # build a fine-tunable checkpoint
+├── cpu/configs/          # ready-made configs for CPU
+├── gpu/configs/          # ready-made configs for NVIDIA CUDA / AMD ROCm
+├── tests/                # pytest unit and integration tests
+├── docs/
+│   ├── en_concepts.md    # beginner-friendly concept guide (English)
+│   └── fr_concepts.md    # the same guide in French
+└── src/main.rs           # Rust ONNX inference binary
 ```
 
 ## Installation
 
 ### Quick install (without cloning)
 
-You can install the package directly from GitHub using either `pip` or `uv`. This gives you immediate access to all CLI tools (`yltrain`, `yleval`, `ylinfer`, `ylft`, `ylexport`) without downloading the full repository.
-
-**With pip** (works in any Python environment, no extra tools needed):
-
 ```bash
 pip install git+https://github.com/cacybernetic/YOLO8
-```
-
-**With uv** (faster, after installing `uv`):
-
-```bash
+# or, faster:
 uv pip install git+https://github.com/cacybernetic/YOLO8
 ```
 
-After installation, you can run the commands directly (see [Usage](#usage)) — just make sure you have the required configuration YAML files (download them from the [configs/](configs/) folder if needed).
-
-> **Note for contributors**: if you plan to modify the code or contribute, please follow the full local installation instructions below.
-
+This registers the CLI tools (`trainyolo8`, `evalyolo8`, `runyolo8`,
+`ftyolo8`, `exportw`, `buildh5ds`). Download the configuration files
+from [cpu/configs/](cpu/configs/) or [gpu/configs/](gpu/configs/).
 
 ### Python — Linux
 
-**1. Install `uv` (fast Python package manager)**
-
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-**2. Clone the repository**
-
-```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv
 git clone https://github.com/cacybernetic/YOLO8
 cd YOLO8
-```
-
-**3. Create a virtual environment with Python 3.10**
-
-```bash
 uv venv --python 3.10
 source .venv/bin/activate
-```
-
-**4. Install the package and its dependencies**
-
-```bash
 uv pip install -e .
 ```
 
-This reads all dependencies from `pyproject.toml` and also registers the command-line tools (`yltrain`, `yleval`, `ylinfer`, `ylft`, `ylexport`) so you can call them directly from your terminal.
-
-> **Note — headless server (no display):** if you are running on a server without a graphical interface, install these system libraries first:
+> **Note — headless server (no display):**
 > ```bash
 > sudo apt-get install libgl1-mesa-glx libglib2.0-0
 > ```
 
 ### Python — Windows
 
-1. Download and install Python 3.10 from [python.org](https://www.python.org/downloads/).
-2. Open a command prompt inside the project folder.
-3. Install `uv`:
-   ```bash
-   pip install uv
-   ```
-4. Create the virtual environment:
-   ```bash
-   uv venv --python 3.10
-   .venv\Scripts\activate
-   ```
-5. Install the package and its dependencies:
-   ```bash
-   uv pip install -e .
-   ```
+```bash
+pip install uv
+uv venv --python 3.10
+.venv\Scripts\activate
+uv pip install -e .
+```
 
 ### Rust (optional)
 
-Only needed if you want to run the Rust ONNX inference binary. Skip this section if you only use the Python scripts.
+Only needed for the Rust ONNX inference binary.
 
 1. Install Rust: [rustup.rs](https://rustup.rs/)
-2. Build the release binary:
-   ```bash
-   cargo build --release
-   ```
+2. `cargo build --release`
 
-The binary will be compiled to `target/release/yolov8rust` (Linux/macOS) or `target\release\yolov8rust.exe` (Windows). It automatically downloads ONNX Runtime on the first build.
+The binary is compiled to `target/release/yolov8rust`.
 
 ---
 
 ## Dataset format
 
-Your dataset must follow the standard YOLO folder structure:
+A dataset split is either a **folder** or a **zip archive** with this
+layout:
 
 ```
-dataset/
-├── train/
-│   ├── images/   # .jpg, .png, .jpeg, ...
-│   └── labels/   # one .txt per image
-├── val/          # recommended: used for per-epoch validation & best.pt selection
-│   ├── images/
-│   └── labels/
-└── test/
-    ├── images/
-    └── labels/
+train.zip (or train/)
+├── images/     # .jpg, .png, .jpeg, ...
+├── labels/     # one .txt per image
+└── data.yaml   # class names
 ```
 
-> **Note**: if `val/` is missing, training falls back to `test/` for validation
-> (with a warning). This is a methodological leak — the model would be selected
-> on the same split used for the final evaluation — so a dedicated `val/` split
-> is strongly recommended.
+`data.yaml` must contain at least a `names` list (`nc` is optional):
 
-Each `.txt` label file contains one object per line:
+```yaml
+nc: 10
+names:
+- door
+- cabinetDoor
+- refrigeratorDoor
+- window
+- chair
+- table
+- cabinet
+- couch
+- openedDoor
+- pole
+```
+
+Each `.txt` label file contains one object per line, values normalized
+to [0, 1]:
 
 ```
 <class_id> <cx> <cy> <w> <h>
 ```
 
-All values are **normalized** between 0 and 1. Example for a single bounding box of class 0:
+Train and test are given separately (`train_path`, `test_path`). The
+validation split is taken from the test set with `val_prob` (default
+0.5). Sample caps are available via `max_train_samples` /
+`max_test_samples`.
 
-```
-0 0.512 0.348 0.230 0.415
-```
+Before anything runs, the dataset is scanned: corrupt images, missing
+labels and malformed lines are dropped with a report, and the result is
+cached in `train.cache.json` / `test.cache.json` next to the dataset.
 
 ---
 
 ## Usage
 
-After installation, five commands are available in your terminal:
+Six commands are installed:
 
-| Command | Role |
-|---|---|
-| `yltrain` | Train a model |
-| `yleval` | Evaluate a model |
-| `ylinfer` | Run inference on an image |
-| `ylft` | Build a fine-tunable checkpoint |
-| `ylexport` | Export to ONNX |
+| Command      | Role                                    |
+|--------------|-----------------------------------------|
+| `buildh5ds`  | Build HDF5 datasets (`train.h5`, `test.h5`) |
+| `trainyolo8` | Train a model (train + val + final test) |
+| `evalyolo8`  | Evaluate a model on the full test set   |
+| `runyolo8`   | Standalone ONNX inference on an image   |
+| `ftyolo8`    | Build a fine-tunable checkpoint         |
+| `exportw`    | Export to ONNX                          |
 
-Each command takes a single `--config` argument pointing to its YAML file.
+Each command takes a single `--config` argument pointing to its YAML
+file. Pick the folder matching your hardware: `cpu/configs/` or
+`gpu/configs/`.
 
-### 1. Train
-
-Edit `configs/train.yaml` to point to your dataset and set your number of classes, then run:
-
-```bash
-yltrain --config configs/train.yaml
-```
-
-Checkpoints are saved in the `checkpoints/` folder. The best model is saved as `checkpoints/best.pt`. A training history plot (loss curves) is regenerated after each epoch at `checkpoints/training_history.png`.
-
-### 2. Evaluate
-
-Edit `configs/eval.yaml` (dataset path, weights path, number of classes), then run:
+### 1. Build HDF5 datasets (optional)
 
 ```bash
-yleval --config configs/eval.yaml
+buildh5ds --config gpu/configs/hdf5.yaml
 ```
 
-Results are written to the `results/` folder:
-- `per_class.csv` — per-class metrics (Precision, Recall, F1, AP@0.5, AP@0.5:0.95)
-- `global.csv` — global metrics (mAP, losses, optimal confidence threshold, …)
-- `figures/` — PR curves, F1-confidence curve, confusion matrices
+Then set `use_hdf5: true` in `train.yaml` to train from `train.h5` /
+`test.h5`. Use `augmented_copies: N` to also bake N augmented copies of
+each train sample into the file.
 
-### 3. Fine-tune on new classes
+### 2. Train
+
+Edit `gpu/configs/train.yaml` (dataset paths, `run_name`), then:
+
+```bash
+trainyolo8 --config gpu/configs/train.yaml
+```
+
+Everything lands in `runs/<run_name>/train[i]/`:
+- `weights/best.pt` (EMA weights of the best epoch) and
+  `weights/last.pt`
+- `checkpoints/checkpoint_eXXXXcYYYY.pth` — fault-tolerance snapshots
+- `plotes/training_history.png`, `history.csv`, `logs/`,
+  `config_used.yaml`
+- `test_results.csv` — final evaluation on the full test set
+
+With `resume: true` (default), restarting the same command reuses the
+latest run folder and continues from the newest checkpoint — even in
+the middle of an epoch or of a validation pass.
+
+### 3. Evaluate
+
+```bash
+evalyolo8 --config gpu/configs/eval.yaml
+```
+
+Results go to `runs/<run_name>/eval[i]/`: `results.csv` (global
+metrics), `per_class.csv`, `plotes/` (PR curve, F1-confidence curve,
+confusion matrices) and `renders/` (example predictions).
+
+### 4. Fine-tune on new classes
 
 **Step 1** — build the fine-tunable checkpoint:
 
-Edit `configs/finetune.yaml` with the source weights, the old number of classes, and the new number of classes, then run:
-
 ```bash
-ylft --config configs/finetune.yaml
+ftyolo8 --config gpu/configs/finetuning.yaml
 ```
 
-This creates a new `.pt` file with the backbone and neck transferred from the source model, and the classification heads re-initialized for the new classes.
+This transfers the backbone, neck, box branches and DFL, and
+re-initializes the classification heads for the new class count.
 
-**Step 2** — train as usual:
+**Step 2** — train as usual with, in `train.yaml`:
 
-In `configs/train.yaml`, set `pretrained_weights` to the output of step 1 and `num_classes` to your new class count. Optionally set `freeze_feature_layers: true` to only train the detection head (recommended for small datasets):
-
-```bash
-yltrain --config configs/train.yaml
+```yaml
+model:
+  pretrained_weights: weights/finetune_init.pt
+  freeze_feature_layers: true   # recommended for small datasets
 ```
 
-### 4. Export to ONNX
-
-Edit `configs/export.yaml`, then run:
+### 5. Export to ONNX
 
 ```bash
-ylexport --config configs/export.yaml
+exportw --config gpu/configs/export.yaml
 ```
 
-The exported `.onnx` file is numerically verified against the PyTorch model by default.
+The exported `.onnx` file is numerically verified against the PyTorch
+model by default.
 
-### 5. Run inference on an image
+### 6. Run inference
 
-Edit `configs/infer.yaml` (weights, number of classes, class names), then run:
+`runyolo8` is a fully standalone ONNX inference script (numpy +
+opencv + onnxruntime only — you can copy
+`src/yolov8/entrypoints/inference.py` anywhere and it keeps working):
 
 ```bash
-ylinfer --config configs/infer.yaml --image path/to/image.jpg
+runyolo8 --model weights/best.onnx --nc 10 \
+         --image photo.jpg --output result.jpg
 ```
 
-Useful options:
-- `--save output.jpg` — save the annotated image to disk
-- `--no-show` — disable the display window (useful on a server)
-- `--conf 0.4` — override the confidence threshold
-- `--iou 0.5` — override the NMS IoU threshold
+Options: `--conf 0.25`, `--iou 0.45`, `--size 640`, `--show`,
+`--names classes.txt` (one class name per line).
 
-### 6. Standalone ONNX scripts (`predict.py` and `live.py`)
+### 7. Standalone ONNX scripts (`predict.py` and `live.py`)
 
-Two helper scripts at the project root let you run a pre-trained ONNX model
-without any dependency on the `yolov8` package — handy for quick demos,
-deployment, or running the model on a machine where you only need
-`onnxruntime` and a couple of small libraries.
-
-Both scripts share the same `--model`, `--nc`, `--conf`, `--iou`, and
-`--names` options, and accept `--log-level` to control verbosity. If the
-model has 80 classes, the standard COCO names are used automatically;
-otherwise pass a `--names classes.txt` file (one class name per line).
-
-#### `predict.py` — single image inference
-
-Runs on **CPU only** by default (uses GPU if `onnxruntime-gpu` is installed).
-Pure `numpy` + `Pillow` for the image pipeline, no OpenCV or PyTorch needed.
+Two extra helper scripts at the project root run a pre-trained ONNX
+model without any dependency on the `yolov8` package:
 
 ```bash
-python predict.py \
-  --model  weights/best.onnx \
-  --nc     80 \
-  --image  samples/photo.jpg \
-  --output result.jpg
-```
+# Single image (numpy + Pillow only)
+python predict.py --model weights/best.onnx --nc 80 \
+  --image samples/photo.jpg --output result.jpg
 
-Common options:
-- `--conf 0.25` — minimum confidence threshold (default 0.25)
-- `--iou 0.45` — NMS IoU threshold (default 0.45)
-- `--show` — display the annotated image after inference
-- `--names classes.txt` — file with one class name per line
-
-#### `live.py` — real-time webcam or video file
-
-Streams predictions in real time on a webcam feed or video file using OpenCV
-for capture and display. Shows a live FPS counter and detection count, and
-can record the annotated stream to disk.
-
-```bash
-# Webcam (index 0)
+# Webcam or video file (OpenCV)
 python live.py --model weights/best.onnx --nc 80 --source 0
-
-# Video file
-python live.py --model weights/best.onnx --nc 80 --source path/to/video.mp4
-
-# Headless mode + save the annotated stream
-python live.py --model weights/best.onnx --nc 80 \
-  --source path/to/video.mp4 --output annotated.mp4 --no-show
 ```
 
-`--source` accepts either an integer (webcam index) or a path to a video file.
-Press `q` or `ESC` in the display window to quit.
-
-Required Python packages for these two scripts: `numpy`, `onnxruntime`,
-`Pillow` (for `predict.py`), `opencv-python` (for `live.py`). They are already
-included in the project dependencies, so nothing more to install.
-
-### 7. Run inference in Rust
-
-**On a single image:**
+### 8. Run inference in Rust
 
 ```bash
 ./target/release/yolov8rust \
-  --model  weights/best.onnx \
-  --image  photo.jpg         \
-  --output result.jpg        \
-  --nc     80                \
-  --conf   0.25              \
-  --iou    0.45
+  --model weights/best.onnx --image photo.jpg \
+  --output result.jpg --nc 80 --conf 0.25 --iou 0.45
+
+# Live from webcam
+./target/release/yololivers --model weights/best.onnx --source 0 --nc 80
 ```
-
-**Live from webcam** (uses the `rustcv`-based binary, compiled separately — see `Cargo.toml` at the root):
-
-```bash
-./target/release/yololivers \
-  --model  weights/best.onnx \
-  --source 0                 \
-  --nc     80
-```
-
-`--source 0` opens the first webcam. Press `q` or `ESC` to quit.
 
 ---
 
 ## Configuration files
 
-All behavior is controlled through YAML files in `configs/`. The most important fields:
+All behavior is controlled through the YAML files in `cpu/configs/` and
+`gpu/configs/`. The train config is nested:
 
-| File | Key fields |
-|---|---|
-| `train.yaml` | `dataset_dir`, `num_classes`, `version` (`n/s/m/l/x`), `epochs`, `batch_size`, `device`, `val_split`, `amp`, `ema`, `close_mosaic`, `patience` |
-| `eval.yaml` | `dataset_dir`, `num_classes`, `weights`, `split` (`test` or `train`) |
-| `infer.yaml` | `weights`, `num_classes`, `class_names`, `conf_threshold` |
-| `export.yaml` | `weights`, `num_classes`, `output_path`, `simplify`, `half` |
-| `finetune.yaml` | `pretrained_weights`, `old_num_classes`, `new_num_classes`, `output_weights` |
+| Block          | Key fields |
+|----------------|------------|
+| (top level)    | `run_name`, `output_dir`, `device`, `seed`, `log_interval` |
+| `dataset`      | `train_path`, `test_path`, `use_hdf5`, `train_h5`, `test_h5`, `validate`, `cache`, `max_train_samples`, `max_test_samples`, `val_prob`, `image_size`, `augment.*` |
+| `model`        | `version` (`n/s/m/l/x`), `pretrained_weights`, `freeze_feature_layers` |
+| `optimization` | `epochs`, `batch_size`, `optimizer`, `max_lr`, `scheduler`, `grad_accum`, `amp`, `ema`, `patience` |
+| `loss`         | `box_gain`, `cls_gain`, `dfl_gain` |
+| `checkpoint`   | `ckpt_step`, `max_checkpoint`, `resume`, `best_metric` |
+| `validation`   | `interval`, `conf_threshold`, `iou_threshold` |
 
-All unknown keys in a YAML file are silently ignored, so you can add comments freely.
+Unknown keys are reported with a warning and ignored.
 
----
+## Fault-tolerant training
+
+The training loop checkpoints every `ckpt_step` optimizer steps into
+`checkpoints/checkpoint_e<epoch>c<step>.pth` (one file per save point,
+rotated with `max_checkpoint`). Each checkpoint stores:
+
+- model, optimizer, EMA, AMP scaler state;
+- the position of the three dataloader adapters (train / val / test);
+- the partial loss meters and metric accumulators;
+- the RNG states (python, numpy, torch, cuda);
+- the training history and the config.
+
+On restart with `resume: true`, the highest-numbered run folder holding
+a checkpoint is reused and training continues exactly where it stopped:
+mid-train-epoch, mid-validation or mid-final-test, without seeing any
+sample twice in the same epoch. This makes multi-day epochs safe
+against power or system failures.
+
+## Documentation
+
+- [docs/en_concepts.md](docs/en_concepts.md) — beginner-friendly guide
+  to every concept used here (English).
+- [docs/fr_concepts.md](docs/fr_concepts.md) — le même guide en
+  français.
+
+Run the test suite with:
+
+```bash
+make test        # or: pytest tests
+```
 
 ## To contribute
 
@@ -410,31 +418,32 @@ Contributions are welcome! Please follow these steps:
 
 ## Licence
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See the
+[LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
- 
-This project was built while learning the inner workings of YOLOv8. A huge
-thank-you to **[dtdo90](https://github.com/dtdo90)** for the excellent
-educational repository
-[**dtdo90/yolov8_detection**](https://github.com/dtdo90/yolov8_detection)
-and the accompanying **[YouTube walkthrough](https://www.youtube.com/watch?v=6zQP0L-ph0M)**,
-both of which served as the primary reference for understanding the architecture
-(backbone, neck, head).
-Many implementation choices in this project — the structure of the `Detect`
-head, and the integration of the
-DFL into the box regression — are directly inspired by its work.
 
-If you find this project useful, please consider giving the **dtdo90** repository a star
-as a token of appreciation for the educational content that made it
-possible.
+This project was built while learning the inner workings of YOLOv8. A
+huge thank-you to **[dtdo90](https://github.com/dtdo90)** for the
+excellent educational repository
+[**dtdo90/yolov8_detection**](https://github.com/dtdo90/yolov8_detection)
+and the accompanying
+**[YouTube walkthrough](https://www.youtube.com/watch?v=6zQP0L-ph0M)**,
+both of which served as the primary reference for understanding the
+architecture (backbone, neck, head). Many implementation choices in
+this project — the structure of the `Detect` head, and the integration
+of the DFL into the box regression — are directly inspired by its work.
+
+If you find this project useful, please consider giving the **dtdo90**
+repository a star as a token of appreciation for the educational
+content that made it possible.
 
 ## References
- 
+
 The implementation is based on the following papers and resources:
 
 ### Loss function and assignment strategy
- 
+
 - **TAL — Task-Aligned Assigner** — Feng, C., Zhong, Y., Gao, Y., Scott, M. R.,
   & Huang, W. (2021). *TOOD: Task-Aligned One-stage Object Detection*.
   ICCV 2021.
@@ -455,7 +464,7 @@ The implementation is based on the following papers and resources:
   [arXiv:1708.02002](https://arxiv.org/abs/1708.02002)
 
 ### Architecture components
- 
+
 - **CSPNet** — Wang, C.-Y., Liao, H.-Y. M., Wu, Y.-H., Chen, P.-Y., Hsieh, J.-W.,
   & Yeh, I.-H. (2020). *CSPNet: A New Backbone that can Enhance Learning
   Capability of CNN*. CVPRW 2020. Foundation of the C2f blocks used in the
@@ -471,7 +480,7 @@ The implementation is based on the following papers and resources:
   [arXiv:1406.4729](https://arxiv.org/abs/1406.4729)
 
 ### Evaluation metrics
- 
+
 - **COCO evaluation protocol** — Lin, T.-Y., Maire, M., Belongie, S., Hays, J.,
   Perona, P., Ramanan, D., Dollár, P., & Zitnick, C. L. (2014).
   *Microsoft COCO: Common Objects in Context*. ECCV 2014. Source of the
@@ -483,10 +492,9 @@ The implementation is based on the following papers and resources:
   [DOI](https://doi.org/10.1109/IWSSIP48289.2020.9145130)
 
 ### Educational reference
- 
+
 - **dtdo90/yolov8_detection** — DT Do (2024). Implementation of the YOLOv8
   detection model with an accompanying YouTube tutorial.
-
 
 ## Contact
 

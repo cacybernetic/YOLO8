@@ -1,437 +1,380 @@
-"""
-Script d'évaluation complet d'un modèle YOLOv8 entraîné.
+"""Full evaluation entrypoint.
 
-Conformément au document `yolov8_metriques.tex`, ce script calcule :
+Usage:
+    yleval --config gpu/configs/eval.yaml
 
-  Métriques par classe (CSV `per_class.csv`) :
-    - n_gt, n_pred, Precision, Recall, F1-Score, AP@0.5, AP@0.5:0.95, Cls Loss
-
-  Métriques globales (CSV `global.csv`) :
-    - mAP@0.5, mAP@0.5:0.95
-    - Precision/Recall/F1 macro et micro
-    - Box Loss, Cls Loss, DFL Loss, Total Loss
-    - IoU moyen sur les TP
-    - Seuil de confiance optimal (max F1 macro) + F1 à ce seuil
-    - Comptes globaux TP/FP/FN/GT/Pred
-
-  Visualisations (PNG dans `<output_dir>/figures/`) :
-    - Courbe Précision-Rappel par classe et moyenne
-    - Courbe F1-Confiance avec seuil optimal marqué
-    - Matrice de confusion (N+1 x N+1, normalisée et brute)
-
-Usage :
-    python -m yolov8.evaluate --config configs/eval.yaml
+Outputs (in runs/<run_name>/eval[i]/):
+  - results.csv     global metrics (mAP, macro/micro P R F1, losses,
+                    best confidence threshold, TP/FP/FN counts)
+  - per_class.csv   per class metrics
+  - plotes/         PR curve, F1-confidence curve, confusion matrices
+  - renders/        example predictions drawn on test images
+  - config_used.yaml, logs/
 """
 
 import argparse
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from loguru import logger
 
-from yolov8.config import load_eval_config, EvalConfig
-from yolov8.dataset import YOLODataset
+from yolov8.config import load_eval_config, config_to_dict, EvalConfig
+from yolov8.dataset import collate_detection_batch
+from yolov8.dataset.factory import (build_test_dataset,
+                                    resolve_class_names)
+from yolov8.devices import resolve_device
+from yolov8.logging import (setup_logging, add_file_logging,
+                            log_model_summary, safe_torch_load)
 from yolov8.lossfn import ComputeLoss
-from yolov8.metrics import non_max_suppression
-from yolov8.metrics_eval import (
-    box_iou,
-    build_confusion_matrix,
-    build_global_csv,
-    build_per_class_csv,
-    compute_ap_per_class,
-    find_best_f1_threshold,
-    match_predictions_to_gt,
-    metrics_at_threshold,
-    plot_confusion_matrix,
-    plot_f1_confidence,
-    plot_pr_curves,
-)
+from yolov8.metrics import (non_max_suppression, build_val_targets,
+                            box_iou_numpy, match_predictions_to_gt,
+                            compute_ap_per_class,
+                            find_best_f1_threshold,
+                            metrics_at_threshold,
+                            build_confusion_matrix,
+                            build_per_class_table, build_global_table)
 from yolov8.model import MyYolo
-from yolov8.utils import (print_model_summary, setup_logging,
-                          build_val_targets, safe_torch_load)
+from yolov8.plotting import (plot_pr_curves, plot_f1_confidence,
+                             plot_confusion_matrix)
+from yolov8.training import prepare_run_dir, save_config_used
 
 
-# ---------------------------------------------------------------------------
-# Boucle d'évaluation : un seul passage sur le dataset, on agrège tout
-# ---------------------------------------------------------------------------
+def load_model(cfg: EvalConfig, num_classes, device):
+    """Build the model and load the weights with a strict check."""
+    model = MyYolo(version=cfg.model.version, num_classes=num_classes,
+                   input_size=cfg.dataset.image_size).to(device)
+    weights_path = Path(cfg.weights)
+    if not weights_path.exists():
+        raise FileNotFoundError(f"Weights not found: {weights_path}")
+    ckpt = safe_torch_load(weights_path, map_location=device)
+    state = ckpt.get('model', ckpt) if isinstance(ckpt, dict) else ckpt
+    try:
+        # Strict load: evaluating a partly loaded model would output
+        # absurd metrics without any visible error.
+        model.load_state_dict(state)
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"Weights '{weights_path}' do not match the model "
+            f"(version={cfg.model.version}, classes={num_classes}). "
+            f"\n  Detail: {e}") from e
+    logger.info(f"Weights loaded: {weights_path}")
+    model.eval()
+    return model
+
+
+def tensor_to_bgr(image_tensor):
+    """CHW RGB float tensor in [0, 1] -> HWC BGR uint8 image."""
+    img = (image_tensor.cpu().numpy() * 255).astype(np.uint8)
+    img = img.transpose(1, 2, 0)
+    return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+
+def render_predictions(image_tensor, preds, class_names, output_path,
+                       conf_threshold=0.25):
+    """Draw the predicted boxes on one image and save it."""
+    img = tensor_to_bgr(image_tensor)
+    for row in preds.cpu().numpy():
+        x1, y1, x2, y2, conf, cls = row
+        if conf < conf_threshold:
+            continue
+        c = int(cls)
+        color = _class_color(c)
+        cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)),
+                      color, 2)
+        name = class_names[c] if c < len(class_names) else str(c)
+        label = f"{name} {conf:.2f}"
+        cv2.putText(img, label, (int(x1), max(int(y1) - 4, 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1,
+                    cv2.LINE_AA)
+    cv2.imwrite(str(output_path), img)
+
+
+def _class_color(c):
+    """Stable pseudo random BGR color for a class id."""
+    rng = np.random.RandomState(c + 7)
+    return tuple(int(v) for v in rng.randint(64, 255, size=3))
+
 
 @torch.no_grad()
-def collect_predictions_and_losses(model, loader, device, image_size,
-                                    conf_threshold, iou_threshold,
-                                    loss_fn, num_classes, iou_v):
-    """Parcourt le dataset une seule fois et accumule :
-      - les prédictions filtrées par NMS, par image
-      - les GT, par image
-      - les TP/FP par seuil IoU pour chaque prédiction (matching greedy COCO)
-      - les pertes (box, cls, dfl) cumulées
-      - la cls_loss BCE par classe (proxy basé sur les confidences)
-      - la somme des IoU sur les TP (pour calculer l'IoU moyen reporté)
+def collect_predictions(model, loader, device, cfg, loss_fn, iou_v,
+                        renders_dir, class_names):
+    """Single pass over the test set: predictions, losses, matches.
 
-    Cette approche en un seul passage est essentielle car on ne peut pas se
-    permettre de re-faire l'inférence à chaque seuil de confiance ou seuil IoU.
-    On stocke à la place toutes les paires (prediction, TP/FP par seuil)
-    pour pouvoir interpoler les courbes a posteriori.
+    One pass is enough because the TP/FP flags are stored per IoU
+    threshold: the curves are interpolated afterwards without a new
+    inference run.
     """
-    model.eval()
-    n_iou = len(iou_v)
-
-    all_tp_matrices = []   # liste de (n_pred_img, n_iou)
-    all_conf = []          # (n_pred_img,)
-    all_pred_cls = []      # (n_pred_img,)
-    all_target_cls = []    # (n_gt_img,)
-
-    # Pour la matrice de confusion : on garde les boites brutes par image
-    # car le filtrage par seuil de conf se fera dans build_confusion_matrix
-    # avec le seuil optimal trouvé en post-traitement.
-    all_preds_cm = []      # liste de (preds_xyxy, pred_cls, pred_conf)
-    all_gts_cm = []        # liste de (gts_xyxy, gt_cls)
-
-    # Accumulateurs de pertes (pondérées par batch_size pour moyenner correctement)
+    data = {'tp': [], 'conf': [], 'cls': [], 'target_cls': [],
+            'preds_cm': [], 'gts_cm': []}
     losses_sum = {'box': 0.0, 'cls': 0.0, 'dfl': 0.0, 'total': 0.0}
     n_samples = 0
+    iou_sum_tp, iou_count_tp = 0.0, 0
+    rendered = 0
 
-    # Somme IoU des TP au seuil 0.5 (pour la métrique "IoU moyen" reportée
-    # dans le CSV global, indicateur de la qualité de localisation)
-    iou_sum_tp = 0.0
-    iou_count_tp = 0
-
-    pbar = tqdm(loader, desc="[eval]", leave=False, dynamic_ncols=True)
+    pbar = tqdm(loader, desc="[eval]", leave=False, dynamic_ncols=True,
+                ascii="░█")
     for images, targets, _paths in pbar:
         images = images.to(device, non_blocking=True)
-
         out = model(images)
-        if isinstance(out, tuple):
-            inference_out, raw_outputs = out
-        else:
-            inference_out, raw_outputs = out, None
+        inference_out, raw_outputs = out if isinstance(out, tuple) \
+            else (out, None)
 
-        # --- Calcul des pertes sur ce batch (si raw_outputs est dispo) ---
-        # Important : la tête de YOLOv8 retourne (inference_out, raw_outputs)
-        # en mode eval, ce qui nous permet de calculer les mêmes pertes qu'en
-        # train sans avoir à repasser par model.train().
-        # Pas de try/except large: une erreur récurrente rendrait les pertes
-        # reportées silencieusement fausses — on préfère échouer explicitement.
         if raw_outputs is not None:
             lb, lc, ld = loss_fn(raw_outputs, targets)
             bs = images.size(0)
-            losses_sum['box']   += float(lb.item()) * bs
-            losses_sum['cls']   += float(lc.item()) * bs
-            losses_sum['dfl']   += float(ld.item()) * bs
+            losses_sum['box'] += float(lb.item()) * bs
+            losses_sum['cls'] += float(lc.item()) * bs
+            losses_sum['dfl'] += float(ld.item()) * bs
             losses_sum['total'] += float((lb + lc + ld).item()) * bs
             n_samples += bs
 
-        # --- NMS pour obtenir les prédictions finales ---
         preds_per_image = non_max_suppression(
-            inference_out,
-            confidence_threshold=conf_threshold,
-            iou_threshold=iou_threshold,
-        )
+            inference_out, confidence_threshold=cfg.conf_threshold,
+            iou_threshold=cfg.iou_threshold)
+        gts_per_image = build_val_targets(
+            images, targets, cfg.dataset.image_size, device)
 
-        # --- GT par image en pixels (xyxy) ---
-        targets_per_image = build_val_targets(images, targets, image_size, device)
+        for i, (preds, gt) in enumerate(
+                zip(preds_per_image, gts_per_image)):
+            stats = _match_one_image(preds, gt, iou_v)
+            for key, value in stats['store'].items():
+                data[key].append(value)
+            iou_sum_tp += stats['iou_sum']
+            iou_count_tp += stats['iou_count']
+            if rendered < cfg.n_renders:
+                render_predictions(
+                    images[i], preds, class_names,
+                    renders_dir / f"render_{rendered:03d}.jpg")
+                rendered += 1
 
-        # --- Matching pour TP/FP/FN par image ---
-        for preds, gt in zip(preds_per_image, targets_per_image):
-            preds = preds.cpu().numpy() if isinstance(preds, torch.Tensor) else preds
-            gt = gt.cpu().numpy() if isinstance(gt, torch.Tensor) else gt
+    return _finalize_collection(data, losses_sum, n_samples,
+                                iou_sum_tp, iou_count_tp, iou_v)
 
-            preds_xyxy = preds[:, :4] if preds.size else np.zeros((0, 4))
-            pred_conf = preds[:, 4] if preds.size else np.zeros(0)
-            pred_cls = preds[:, 5].astype(int) if preds.size else np.zeros(0, dtype=int)
 
-            gts_xyxy = gt[:, 1:5] if gt.size else np.zeros((0, 4))
-            gt_cls = gt[:, 0].astype(int) if gt.size else np.zeros(0, dtype=int)
+def _match_one_image(preds, gt, iou_v):
+    """TP/FP matching of one image. Returns arrays and IoU sums."""
+    preds = preds.cpu().numpy()
+    gt = gt.cpu().numpy()
+    preds_xyxy = preds[:, :4] if preds.size else np.zeros((0, 4))
+    pred_conf = preds[:, 4] if preds.size else np.zeros(0)
+    pred_cls = preds[:, 5].astype(int) if preds.size \
+        else np.zeros(0, dtype=int)
+    gts_xyxy = gt[:, 1:5] if gt.size else np.zeros((0, 4))
+    gt_cls = gt[:, 0].astype(int) if gt.size \
+        else np.zeros(0, dtype=int)
 
-            tp = match_predictions_to_gt(
-                preds_xyxy, pred_cls, pred_conf,
-                gts_xyxy, gt_cls,
-                iou_thresholds=iou_v,
-            )
-            all_tp_matrices.append(tp)
-            all_conf.append(pred_conf)
-            all_pred_cls.append(pred_cls)
-            all_target_cls.append(gt_cls)
+    tp = match_predictions_to_gt(preds_xyxy, pred_cls, pred_conf,
+                                 gts_xyxy, gt_cls, iou_v)
 
-            all_preds_cm.append((preds_xyxy, pred_cls, pred_conf))
-            all_gts_cm.append((gts_xyxy, gt_cls))
-
-            # IoU moyen sur les TP @ 0.5 (qualité de localisation)
-            if preds_xyxy.shape[0] > 0 and gts_xyxy.shape[0] > 0 and tp[:, 0].any():
-                iou_mat = box_iou(preds_xyxy, gts_xyxy)
-                cls_match = pred_cls[:, None] == gt_cls[None, :]
-                iou_mat = np.where(cls_match, iou_mat, 0.0)
-                tp_indices = np.where(tp[:, 0])[0]
-                for i in tp_indices:
-                    iou_max = float(iou_mat[i].max()) if iou_mat[i].size else 0.0
-                    if iou_max > 0:
-                        iou_sum_tp += iou_max
-                        iou_count_tp += 1
-
-    # --- Concaténation finale ---
-    if all_tp_matrices:
-        tp_matrix = np.concatenate(all_tp_matrices, axis=0)
-        conf = np.concatenate(all_conf, axis=0)
-        pred_cls = np.concatenate(all_pred_cls, axis=0)
-    else:
-        tp_matrix = np.zeros((0, n_iou), dtype=bool)
-        conf = np.zeros(0)
-        pred_cls = np.zeros(0, dtype=int)
-    target_cls = np.concatenate(all_target_cls, axis=0) if all_target_cls else np.zeros(0, dtype=int)
-
-    # Moyennes des pertes
-    if n_samples > 0:
-        losses = {k: v / n_samples for k, v in losses_sum.items()}
-    else:
-        losses = {k: 0.0 for k in losses_sum}
-
-    # IoU moyen sur les TP
-    iou_mean = iou_sum_tp / iou_count_tp if iou_count_tp > 0 else 0.0
-
-    # Cls loss par classe : proxy BCE basé sur les confidences des prédictions
-    # filtrées par NMS.
-    #   - TP : cls_loss = -log(conf)        (on aurait voulu prédire avec conf=1)
-    #   - FP : cls_loss = -log(1 - conf)    (on aurait voulu prédire avec conf=0)
-    # Cette approximation est cohérente avec la BCE per-class et permet
-    # d'identifier rapidement les classes "difficiles" pour le modèle.
-    eps = 1e-9
-    cls_loss_per_class = np.zeros(num_classes, dtype=np.float64)
-    cls_loss_count = np.zeros(num_classes, dtype=np.int64)
-    for i in range(len(conf)):
-        c = int(pred_cls[i])
-        if 0 <= c < num_classes:
-            if tp_matrix[i, 0]:
-                cls_loss_per_class[c] += -float(np.log(max(conf[i], eps)))
-            else:
-                cls_loss_per_class[c] += -float(np.log(max(1.0 - conf[i], eps)))
-            cls_loss_count[c] += 1
-    cls_loss_per_class_dict = {}
-    for c in range(num_classes):
-        if cls_loss_count[c] > 0:
-            cls_loss_per_class_dict[c] = float(cls_loss_per_class[c] / cls_loss_count[c])
-        else:
-            cls_loss_per_class_dict[c] = 0.0
+    iou_sum, iou_count = 0.0, 0
+    if preds_xyxy.shape[0] and gts_xyxy.shape[0] and tp[:, 0].any():
+        iou_mat = box_iou_numpy(preds_xyxy, gts_xyxy)
+        cls_match = pred_cls[:, None] == gt_cls[None, :]
+        iou_mat = np.where(cls_match, iou_mat, 0.0)
+        for i in np.where(tp[:, 0])[0]:
+            iou_max = float(iou_mat[i].max()) if iou_mat[i].size else 0.0
+            if iou_max > 0:
+                iou_sum += iou_max
+                iou_count += 1
 
     return {
-        'tp_matrix': tp_matrix,
-        'conf': conf,
-        'pred_cls': pred_cls,
-        'target_cls': target_cls,
-        'all_preds_cm': all_preds_cm,
-        'all_gts_cm': all_gts_cm,
-        'losses': losses,
-        'cls_loss_per_class': cls_loss_per_class_dict,
+        'store': {
+            'tp': tp, 'conf': pred_conf, 'cls': pred_cls,
+            'target_cls': gt_cls,
+            'preds_cm': (preds_xyxy, pred_cls, pred_conf),
+            'gts_cm': (gts_xyxy, gt_cls),
+        },
+        'iou_sum': iou_sum, 'iou_count': iou_count,
+    }
+
+
+def _finalize_collection(data, losses_sum, n_samples, iou_sum_tp,
+                         iou_count_tp, iou_v):
+    if data['tp']:
+        tp_matrix = np.concatenate(data['tp'], axis=0)
+        conf = np.concatenate(data['conf'], axis=0)
+        pred_cls = np.concatenate(data['cls'], axis=0)
+    else:
+        tp_matrix = np.zeros((0, len(iou_v)), dtype=bool)
+        conf = np.zeros(0)
+        pred_cls = np.zeros(0, dtype=int)
+    target_cls = np.concatenate(data['target_cls'], axis=0) \
+        if data['target_cls'] else np.zeros(0, dtype=int)
+
+    losses = {k: (v / n_samples if n_samples else 0.0)
+              for k, v in losses_sum.items()}
+    iou_mean = iou_sum_tp / iou_count_tp if iou_count_tp else 0.0
+    return {
+        'tp_matrix': tp_matrix, 'conf': conf, 'pred_cls': pred_cls,
+        'target_cls': target_cls, 'all_preds_cm': data['preds_cm'],
+        'all_gts_cm': data['gts_cm'], 'losses': losses,
         'iou_mean': iou_mean,
     }
 
 
-# ---------------------------------------------------------------------------
-# Pipeline principal
-# ---------------------------------------------------------------------------
+def cls_loss_per_class_proxy(data, num_classes, eps=1e-9):
+    """BCE-style per class loss proxy from the NMS confidences.
 
-@torch.no_grad()
-def evaluate(cfg: EvalConfig):
-    # Détection automatique du device si CUDA non dispo
-    if cfg.device.startswith('cuda') and not torch.cuda.is_available():
-        logger.warning("CUDA indisponible, fallback sur CPU")
-        device = torch.device('cpu')
-    else:
-        device = torch.device(cfg.device)
+    TP: -log(conf) (we wanted conf = 1). FP: -log(1 - conf) (we
+    wanted conf = 0). A quick way to spot the hard classes.
+    """
+    sums = np.zeros(num_classes, dtype=np.float64)
+    counts = np.zeros(num_classes, dtype=np.int64)
+    conf = data['conf']
+    pred_cls = data['pred_cls']
+    tp_50 = data['tp_matrix'][:, 0] if data['tp_matrix'].size \
+        else np.zeros(0, dtype=bool)
+    for i in range(len(conf)):
+        c = int(pred_cls[i])
+        if not 0 <= c < num_classes:
+            continue
+        if tp_50[i]:
+            sums[c] += -float(np.log(max(conf[i], eps)))
+        else:
+            sums[c] += -float(np.log(max(1.0 - conf[i], eps)))
+        counts[c] += 1
+    return {c: float(sums[c] / counts[c]) if counts[c] else 0.0
+            for c in range(num_classes)}
+
+
+def evaluate(cfg: EvalConfig, run_dir):
+    device = resolve_device(cfg.device)
     logger.info(f"device={device}")
+    plotes_dir = Path(run_dir) / 'plotes'
+    renders_dir = Path(run_dir) / 'renders'
+    renders_dir.mkdir(exist_ok=True)
 
-    # Dossier de sortie pour CSVs et figures
-    output_dir = Path(cfg.output_dir)
-    figures_dir = output_dir / 'figures'
-    figures_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Résultats dans: {output_dir}")
-
-    # --- Dataset + DataLoader ---
-    ds = YOLODataset(cfg.dataset_dir, split=cfg.split,
-                     image_size=cfg.image_size, augment=False)
+    test_ds = build_test_dataset(cfg.dataset, seed=cfg.seed)
+    class_names = resolve_class_names(cfg.dataset, test_ds)
+    num_classes = len(class_names)
     loader = DataLoader(
-        ds, batch_size=cfg.batch_size, shuffle=False,
-        num_workers=cfg.num_workers, pin_memory=(device.type == 'cuda'),
-        collate_fn=YOLODataset.collate_fn, drop_last=False,
-        persistent_workers=(cfg.num_workers > 0),
-    )
-    logger.info(f"Données: {cfg.split}={len(ds)}")
+        test_ds, batch_size=cfg.batch_size, shuffle=False,
+        num_workers=cfg.num_workers,
+        pin_memory=(device.type == 'cuda'),
+        collate_fn=collate_detection_batch, drop_last=False)
+    logger.info(f"Data: test={len(test_ds)} | classes={num_classes}")
 
-    # --- Modèle + chargement des poids ---
-    # (head.stride est un buffer non persistant: suit .to(device), absent du state_dict)
-    model = MyYolo(version=cfg.version, num_classes=cfg.num_classes,
-                   input_size=cfg.image_size).to(device)
+    model = load_model(cfg, num_classes, device)
+    logger.info("===== model architecture =====")
+    log_model_summary(
+        model, input_size=(1, 3, cfg.dataset.image_size,
+                           cfg.dataset.image_size), device=device)
+    loss_fn = ComputeLoss(model, cfg.loss.gains())
 
-    weights_path = Path(cfg.weights)
-    if not weights_path.exists():
-        raise FileNotFoundError(f"Poids introuvables: {weights_path}")
-    ckpt = safe_torch_load(weights_path, map_location=device)
-    state = ckpt.get('model', ckpt) if isinstance(ckpt, dict) else ckpt
-    # Chargement STRICT: évaluer un modèle partiellement chargé (clés
-    # manquantes silencieusement laissées aléatoires) produirait des
-    # métriques absurdes sans aucune erreur visible.
-    try:
-        model.load_state_dict(state)
-    except RuntimeError as e:
-        raise RuntimeError(
-            f"Les poids '{weights_path}' ne correspondent pas au modèle "
-            f"(version={cfg.version}, num_classes={cfg.num_classes}). "
-            f"Vérifiez la config d'évaluation.\n  Détail: {e}"
-        ) from e
-    logger.info(f"Poids chargés: {weights_path}")
-    print_model_summary(model, input_size=(1, 3, cfg.image_size, cfg.image_size),
-                        device=device)
-
-    # --- Loss (mêmes gains qu'en train pour cohérence) ---
-    loss_params = {'box': cfg.box_gain, 'cls': cfg.cls_gain, 'dfl': cfg.dfl_gain}
-    loss_fn = ComputeLoss(model, loss_params)
-
-    # --- Seuils IoU pour mAP@0.5:0.95 ---
-    # Convention COCO : 10 seuils espacés de 0.05 entre 0.5 et 0.95 (inclus)
+    # COCO convention: 10 IoU thresholds from 0.5 to 0.95.
     iou_v = np.linspace(0.5, 0.95, 10)
+    logger.info("Evaluation loop...")
+    data = collect_predictions(model, loader, device, cfg, loss_fn,
+                               iou_v, renders_dir, class_names)
 
-    # --- Collecte (un seul passage sur le dataset) ---
-    logger.info("Boucle d'évaluation...")
-    data = collect_predictions_and_losses(
-        model, loader, device, cfg.image_size,
-        conf_threshold=cfg.conf_threshold,
-        iou_threshold=cfg.iou_threshold,
-        loss_fn=loss_fn,
-        num_classes=cfg.num_classes,
-        iou_v=iou_v,
-    )
-
-    # --- Calcul AP par classe + courbes interpolées ---
-    logger.info("Calcul des AP par classe...")
+    logger.info("Computing per class AP...")
     per_class = compute_ap_per_class(
-        tp_matrix=data['tp_matrix'],
-        conf=data['conf'],
-        pred_cls=data['pred_cls'],
-        target_cls=data['target_cls'],
-        num_classes=cfg.num_classes,
-    )
+        data['tp_matrix'], data['conf'], data['pred_cls'],
+        data['target_cls'], num_classes=num_classes)
 
-    # --- Seuil de confiance optimal (max F1 macro) ---
-    # Le seuil optimal est celui qui maximise la moyenne arithmétique des F1
-    # sur toutes les classes. C'est la convention de Ultralytics et c'est ce
-    # que recommande le doc LaTeX dans la section sur la courbe F1-Confidence.
     px = np.linspace(0, 1, 1000)
     best_conf, best_f1 = find_best_f1_threshold(per_class, px)
-    logger.info(f"Seuil de confiance optimal: {best_conf:.4f} "
-                f"(F1 macro = {best_f1:.4f})")
+    logger.info(f"Best confidence threshold: {best_conf:.4f} "
+                f"(macro F1 = {best_f1:.4f})")
+    metrics_thr = metrics_at_threshold(per_class, px, best_conf)
 
-    # Métriques par classe au seuil optimal pour les CSVs
-    metrics_at_thr = metrics_at_threshold(per_class, px, best_conf)
+    counts = _global_counts(data, best_conf)
+    _write_tables(run_dir, per_class, metrics_thr, data, counts,
+                  best_conf, best_f1, class_names, num_classes)
+    _write_figures(plotes_dir, per_class, class_names, data,
+                   num_classes, best_conf)
+    logger.success(f"Evaluation done. Results in: {run_dir}")
 
-    # --- Comptes globaux TP/FP/FN au seuil optimal pour le micro-averaging ---
-    n_total_gt = int(data['target_cls'].size)
-    n_total_pred = int(data['pred_cls'].size)
+
+def _global_counts(data, best_conf):
     keep = data['conf'] >= best_conf
-    tp_filtered = data['tp_matrix'][keep, 0]  # @ IoU 0.5
-    n_total_tp = int(tp_filtered.sum())
-    n_total_fp = int((~tp_filtered).sum())
-    n_total_fn = max(0, n_total_gt - n_total_tp)
+    tp_filtered = data['tp_matrix'][keep, 0] if data['tp_matrix'].size \
+        else np.zeros(0, dtype=bool)
+    n_tp = int(tp_filtered.sum())
+    n_gt = int(data['target_cls'].size)
+    return {
+        'n_gt': n_gt,
+        'n_pred': int(data['pred_cls'].size),
+        'n_tp': n_tp,
+        'n_fp': int((~tp_filtered).sum()),
+        'n_fn': max(0, n_gt - n_tp),
+    }
 
-    # --- Résolution des noms de classes ---
-    if cfg.class_names and len(cfg.class_names) == cfg.num_classes:
-        class_names = [str(n) for n in cfg.class_names]
-    else:
-        class_names = [f'class_{i}' for i in range(cfg.num_classes)]
 
-    # === CSVs ===
-    logger.info("Génération des CSVs...")
-    df_per_class = build_per_class_csv(
-        per_class, metrics_at_thr, class_names,
-        cls_loss_per_class=data['cls_loss_per_class'],
-    )
-    df_global = build_global_csv(
-        per_class, metrics_at_thr, data['losses'],
-        iou_mean=data['iou_mean'],
-        best_conf_threshold=best_conf,
-        best_f1=best_f1,
-        n_total_gt=n_total_gt,
-        n_total_pred=n_total_pred,
-        n_total_tp=n_total_tp,
-        n_total_fp=n_total_fp,
-        n_total_fn=n_total_fn,
-    )
+def _write_tables(run_dir, per_class, metrics_thr, data, counts,
+                  best_conf, best_f1, class_names, num_classes):
+    cls_loss = cls_loss_per_class_proxy(data, num_classes)
+    df_per_class = build_per_class_table(
+        per_class, metrics_thr, class_names,
+        cls_loss_per_class=cls_loss)
+    df_global = build_global_table(
+        per_class, metrics_thr, data['losses'], data['iou_mean'],
+        best_conf, best_f1, counts)
 
-    per_class_csv = output_dir / 'per_class.csv'
-    global_csv = output_dir / 'global.csv'
+    per_class_csv = Path(run_dir) / 'per_class.csv'
+    results_csv = Path(run_dir) / 'results.csv'
     df_per_class.to_csv(per_class_csv, index=False)
-    df_global.to_csv(global_csv, index=False)
-    logger.success(f"CSV écrit: {per_class_csv}")
-    logger.success(f"CSV écrit: {global_csv}")
+    df_global.to_csv(results_csv, index=False)
+    logger.success(f"CSV written: {results_csv}")
+    logger.success(f"CSV written: {per_class_csv}")
 
-    # === Figures matplotlib ===
-    logger.info("Génération des figures...")
-    plot_pr_curves(per_class, class_names, figures_dir / 'pr_curve.png')
-    plot_f1_confidence(per_class, class_names, figures_dir / 'f1_confidence.png')
+    _log_table(df_global)
+    if len(df_per_class) > 0:
+        logger.info("Top 5 classes by AP@0.5:")
+        _log_table(df_per_class.nlargest(5, 'ap50'))
+        if len(df_per_class) > 5:
+            logger.info("Bottom 5 classes by AP@0.5:")
+            _log_table(df_per_class.nsmallest(5, 'ap50'))
 
-    # Matrice de confusion : on l'utilise au seuil de conf optimal pour
-    # une lecture cohérente avec les autres métriques rapportées.
-    logger.info("Calcul de la matrice de confusion...")
+
+def _log_table(df):
+    for line in df.to_string(index=False).splitlines():
+        logger.info(f"  {line}")
+
+
+def _write_figures(plotes_dir, per_class, class_names, data,
+                   num_classes, best_conf):
+    logger.info("Writing figures...")
+    plot_pr_curves(per_class, class_names, plotes_dir / 'pr_curve.png')
+    plot_f1_confidence(per_class, class_names,
+                       plotes_dir / 'f1_confidence.png')
     cm = build_confusion_matrix(
         data['all_preds_cm'], data['all_gts_cm'],
-        num_classes=cfg.num_classes,
-        iou_threshold=0.45,
-        conf_threshold=best_conf,
-    )
-    plot_confusion_matrix(cm, class_names,
-                          figures_dir / 'confusion_matrix_normalized.png',
-                          normalize=True)
-    plot_confusion_matrix(cm, class_names,
-                          figures_dir / 'confusion_matrix.png',
-                          normalize=False)
-    logger.success(f"Figures écrites dans: {figures_dir}/")
-    for fname in ['pr_curve.png', 'f1_confidence.png',
-                  'confusion_matrix.png', 'confusion_matrix_normalized.png']:
-        logger.info(f"  - {fname}")
-
-    # === Résumé console ===
-    # Note: on utilise `print` ici (pas logger) pour les tableaux pandas, car
-    # loguru préfixe chaque ligne avec un timestamp ce qui rendrait la mise en
-    # forme tabulaire illisible. Même justification que pour torchinfo.summary.
-    print("\n" + "=" * 80)
-    print("Résultats globaux")
-    print("=" * 80)
-    print(df_global.to_string(index=False))
-
-    # Top et bottom 5 classes par AP@0.5 (utile pour identifier rapidement
-    # les classes problématiques)
-    if len(df_per_class) > 0:
-        print("\nTop 5 classes par AP@0.5:")
-        print(df_per_class.nlargest(5, 'ap50').to_string(index=False))
-        if len(df_per_class) > 5:
-            print("\nBottom 5 classes par AP@0.5:")
-            print(df_per_class.nsmallest(5, 'ap50').to_string(index=False))
-
-    return {
-        'per_class': df_per_class,
-        'global': df_global,
-        'best_conf': best_conf,
-        'output_dir': str(output_dir),
-    }
+        num_classes=num_classes, iou_threshold=0.45,
+        conf_threshold=best_conf)
+    plot_confusion_matrix(
+        cm, class_names,
+        plotes_dir / 'confusion_matrix_normalized.png', normalize=True)
+    plot_confusion_matrix(
+        cm, class_names, plotes_dir / 'confusion_matrix.png',
+        normalize=False)
+    logger.success(f"Figures written in: {plotes_dir}/")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Évaluation YOLOv8 — toutes les métriques du doc LaTeX, "
-                    "avec CSVs et figures.",
-    )
-    parser.add_argument('--config', type=str, required=True,
-                        help='Chemin vers eval.yaml')
+        description="Evaluate a YOLOv8 model on the full test set.")
+    parser.add_argument('-c', '--config', type=str, required=True,
+                        help='Path to eval.yaml')
     parser.add_argument('--log-level', type=str, default='INFO',
-                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-                        help='Niveau de log loguru')
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
     args = parser.parse_args()
 
-    # Configuration du logging unifié
     setup_logging(level=args.log_level)
-
+    logger.info("Starting evaluation pipeline")
     cfg = load_eval_config(args.config)
-    evaluate(cfg)
+
+    run_dir, _ = prepare_run_dir(cfg.output_dir, cfg.run_name,
+                                 kind='eval', resume=False)
+    add_file_logging(run_dir / 'logs', prefix='eval',
+                     level=args.log_level)
+    save_config_used(run_dir, config_to_dict(cfg))
+
+    evaluate(cfg, run_dir)
 
 
 if __name__ == '__main__':
