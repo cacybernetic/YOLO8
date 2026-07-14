@@ -31,7 +31,7 @@ from loguru import logger
 
 from yolov8.config import ExportConfig, load_export_config
 from yolov8.model import MyYolo
-from yolov8.utils import print_model_summary, setup_logging
+from yolov8.utils import print_model_summary, setup_logging, safe_torch_load
 
 
 # ---------------------------------------------------------------------------
@@ -63,25 +63,26 @@ class YoloExportWrapper(nn.Module):
 # ---------------------------------------------------------------------------
 
 def load_model(cfg: ExportConfig, device: torch.device) -> MyYolo:
+    # (head.stride est un buffer non persistant: suit .to(device))
     model = MyYolo(version=cfg.version, num_classes=cfg.num_classes,
                    input_size=cfg.image_size).to(device)
-    model.head.stride = model.head.stride.to(device)
 
     weights_path = Path(cfg.weights)
     if not weights_path.exists():
         raise FileNotFoundError(f"Poids introuvables: {weights_path}")
 
-    try:
-        ckpt = torch.load(weights_path, map_location=device, weights_only=False)
-    except TypeError:
-        ckpt = torch.load(weights_path, map_location=device)
-
+    ckpt = safe_torch_load(weights_path, map_location=device)
     state = ckpt.get('model', ckpt) if isinstance(ckpt, dict) else ckpt
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    if missing:
-        logger.warning(f"{len(missing)} clé(s) manquante(s) (normal si la tête a changé)")
-    if unexpected:
-        logger.warning(f"{len(unexpected)} clé(s) inattendue(s)")
+    # Chargement strict: exporter un modèle partiellement chargé produirait
+    # un ONNX silencieusement défectueux.
+    try:
+        model.load_state_dict(state)
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"Les poids '{weights_path}' ne correspondent pas au modèle "
+            f"(version={cfg.version}, num_classes={cfg.num_classes}).\n"
+            f"  Détail: {e}"
+        ) from e
     logger.info(f"Poids chargés: {weights_path}")
 
     model.eval()

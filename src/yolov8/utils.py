@@ -1,12 +1,78 @@
 """Utilitaires partagés entre les scripts (train, evaluate, export, infer)."""
 
+import math
 import sys
+from copy import deepcopy
 from pathlib import Path
 from typing import Optional, Union
 
 import torch
 import torch.nn as nn
 from loguru import logger
+
+
+def safe_torch_load(path, map_location='cpu'):
+    """Charge un checkpoint en privilégiant la désérialisation sûre.
+
+    `torch.load(weights_only=False)` exécute du pickle arbitraire : c'est un
+    vecteur d'exécution de code si le fichier n'est pas de confiance. On tente
+    d'abord `weights_only=True` (suffisant pour nos checkpoints : tenseurs +
+    types primitifs), et on ne retombe sur le mode non sûr qu'en dernier
+    recours, avec un avertissement explicite.
+    """
+    try:
+        return torch.load(path, map_location=map_location, weights_only=True)
+    except TypeError:
+        # PyTorch trop ancien: pas d'argument weights_only
+        return torch.load(path, map_location=map_location)
+    except Exception:
+        logger.warning(
+            f"'{path}': chargement sûr (weights_only=True) impossible, "
+            f"fallback sur la désérialisation pickle complète. Ne chargez que "
+            f"des fichiers de confiance.")
+        return torch.load(path, map_location=map_location, weights_only=False)
+
+
+class ModelEMA:
+    """Exponential Moving Average des poids du modèle (convention Ultralytics).
+
+    Maintient une copie lissée des poids: ema = d·ema + (1-d)·model, où le
+    decay `d` monte progressivement vers `decay` selon
+    d(u) = decay · (1 - exp(-u / tau)) — les premières mises à jour suivent
+    le modèle de près, puis le lissage s'installe. L'EMA est utilisée pour la
+    validation et la sauvegarde du meilleur modèle: elle est nettement plus
+    stable que les poids bruts (typiquement +1-2 mAP et des courbes val
+    beaucoup moins bruitées).
+    """
+
+    def __init__(self, model, decay=0.9999, tau=2000.0, updates=0):
+        self.ema = deepcopy(model).eval()
+        for p in self.ema.parameters():
+            p.requires_grad_(False)
+        self.updates = int(updates)
+        self._decay = float(decay)
+        self._tau = float(tau)
+
+    def decay(self):
+        return self._decay * (1 - math.exp(-self.updates / self._tau))
+
+    @torch.no_grad()
+    def update(self, model):
+        """À appeler après chaque optimizer.step()."""
+        self.updates += 1
+        d = self.decay()
+        msd = model.state_dict()
+        for k, v in self.ema.state_dict().items():
+            if v.dtype.is_floating_point:
+                v.mul_(d).add_(msd[k].detach(), alpha=1 - d)
+            else:
+                # buffers entiers (num_batches_tracked...): copie directe
+                v.copy_(msd[k])
+
+    def load_state_dict(self, state_dict, updates=None):
+        self.ema.load_state_dict(state_dict)
+        if updates is not None:
+            self.updates = int(updates)
 
 
 def setup_logging(level: str = "INFO",

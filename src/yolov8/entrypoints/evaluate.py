@@ -50,7 +50,8 @@ from yolov8.metrics_eval import (
     plot_pr_curves,
 )
 from yolov8.model import MyYolo
-from yolov8.utils import print_model_summary, setup_logging, build_val_targets
+from yolov8.utils import (print_model_summary, setup_logging,
+                          build_val_targets, safe_torch_load)
 
 
 # ---------------------------------------------------------------------------
@@ -111,17 +112,16 @@ def collect_predictions_and_losses(model, loader, device, image_size,
         # Important : la tête de YOLOv8 retourne (inference_out, raw_outputs)
         # en mode eval, ce qui nous permet de calculer les mêmes pertes qu'en
         # train sans avoir à repasser par model.train().
+        # Pas de try/except large: une erreur récurrente rendrait les pertes
+        # reportées silencieusement fausses — on préfère échouer explicitement.
         if raw_outputs is not None:
-            try:
-                lb, lc, ld = loss_fn(raw_outputs, targets)
-                bs = images.size(0)
-                losses_sum['box']   += float(lb.item()) * bs
-                losses_sum['cls']   += float(lc.item()) * bs
-                losses_sum['dfl']   += float(ld.item()) * bs
-                losses_sum['total'] += float((lb + lc + ld).item()) * bs
-                n_samples += bs
-            except Exception as e:
-                pbar.write(f"[warn] échec calcul loss sur ce batch: {e}")
+            lb, lc, ld = loss_fn(raw_outputs, targets)
+            bs = images.size(0)
+            losses_sum['box']   += float(lb.item()) * bs
+            losses_sum['cls']   += float(lc.item()) * bs
+            losses_sum['dfl']   += float(ld.item()) * bs
+            losses_sum['total'] += float((lb + lc + ld).item()) * bs
+            n_samples += bs
 
         # --- NMS pour obtenir les prédictions finales ---
         preds_per_image = non_max_suppression(
@@ -252,29 +252,33 @@ def evaluate(cfg: EvalConfig):
                      image_size=cfg.image_size, augment=False)
     loader = DataLoader(
         ds, batch_size=cfg.batch_size, shuffle=False,
-        num_workers=cfg.num_workers, pin_memory=(cfg.device.startswith('cuda')),
+        num_workers=cfg.num_workers, pin_memory=(device.type == 'cuda'),
         collate_fn=YOLODataset.collate_fn, drop_last=False,
+        persistent_workers=(cfg.num_workers > 0),
     )
     logger.info(f"Données: {cfg.split}={len(ds)}")
 
     # --- Modèle + chargement des poids ---
+    # (head.stride est un buffer non persistant: suit .to(device), absent du state_dict)
     model = MyYolo(version=cfg.version, num_classes=cfg.num_classes,
                    input_size=cfg.image_size).to(device)
-    model.head.stride = model.head.stride.to(device)
 
     weights_path = Path(cfg.weights)
     if not weights_path.exists():
         raise FileNotFoundError(f"Poids introuvables: {weights_path}")
-    try:
-        ckpt = torch.load(weights_path, map_location=device, weights_only=False)
-    except TypeError:
-        ckpt = torch.load(weights_path, map_location=device)
+    ckpt = safe_torch_load(weights_path, map_location=device)
     state = ckpt.get('model', ckpt) if isinstance(ckpt, dict) else ckpt
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    if missing:
-        logger.warning(f"missing keys: {len(missing)}")
-    if unexpected:
-        logger.warning(f"unexpected keys: {len(unexpected)}")
+    # Chargement STRICT: évaluer un modèle partiellement chargé (clés
+    # manquantes silencieusement laissées aléatoires) produirait des
+    # métriques absurdes sans aucune erreur visible.
+    try:
+        model.load_state_dict(state)
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"Les poids '{weights_path}' ne correspondent pas au modèle "
+            f"(version={cfg.version}, num_classes={cfg.num_classes}). "
+            f"Vérifiez la config d'évaluation.\n  Détail: {e}"
+        ) from e
     logger.info(f"Poids chargés: {weights_path}")
     print_model_summary(model, input_size=(1, 3, cfg.image_size, cfg.image_size),
                         device=device)

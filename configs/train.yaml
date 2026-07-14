@@ -3,11 +3,17 @@
 # ============================================================================
 
 # --- Dataset ---
-dataset_dir: /chemin/vers/dataset_dir   # doit contenir train/ et test/
+dataset_dir: /chemin/vers/dataset_dir   # doit contenir train/ et test/ (et idéalement val/)
 num_classes: 80                          # à adapter à votre dataset
 image_size: 640
 augment: true
 check_images: true                       # vérifie l'intégrité des images au démarrage (plus long mais évite crashs)
+
+# Split utilisé pour la validation par epoch (sélection du best.pt).
+#   null (défaut) = auto: utilise 'val/' s'il existe, sinon 'test/' avec un warning.
+# IMPORTANT: sélectionner le best sur le test set puis évaluer dessus est une
+# fuite méthodologique — créez un split val/ dédié pour un protocole propre.
+val_split: null
 
 # --- Augmentations (ignoré si augment: false) ---
 # Laissez à null pour utiliser les defaults (voir DEFAULT_AUGMENT_PARAMS dans dataset.py).
@@ -26,6 +32,9 @@ augment_params:
   # Flips
   flip_lr: 0.5            # proba flip horizontal
   flip_ud: 0.0            # proba flip vertical (à activer seulement si pertinent)
+  # Mosaïque (4 images combinées) — augmentation clé de YOLOv8 pour les petits
+  # objets. Désactivée automatiquement sur les dernières epochs (close_mosaic).
+  mosaic: 1.0             # proba d'appliquer la mosaïque (défaut YOLOv8: 1.0)
   # MixUp (mélange 2 images)
   mixup: 0.0              # proba d'appliquer MixUp (ex: 0.15 pour YOLOv8-L/X)
   # Cutout (patches aléatoires)
@@ -64,11 +73,35 @@ num_workers: 4
 max_lr: 0.01
 min_lr: 0.0001
 warmup_epochs: 3.0
+warmup_momentum: 0.8          # momentum de départ pendant le warmup (monte vers `momentum`)
+warmup_bias_lr: 0.1           # LR de départ des biais pendant le warmup (descend vers max_lr)
 momentum: 0.937
 weight_decay: 0.0005
 scheduler: cosine    # cosine | linear
 grad_clip: 10.0
 grad_accumulation_steps: 1    # accumule les gradients sur N micro-batches avant optimizer.step()
+
+# Mixed precision (autocast FP16 + GradScaler) — actif uniquement sur CUDA.
+# ~2x plus rapide et ~2x moins de mémoire GPU, sans perte de précision.
+amp: true
+
+# EMA (Exponential Moving Average des poids) — la validation et best.pt
+# utilisent les poids lissés: métrique plus stable, typiquement +1-2 mAP.
+ema: true
+ema_decay: 0.9999
+ema_tau: 2000.0
+
+# Désactive mosaic + mixup sur les N dernières epochs (convention YOLOv8:
+# finir sur des images réelles améliore la précision finale). 0 = jamais.
+close_mosaic: 10
+
+# Early stopping: arrête si `save_best_metric` ne s'améliore pas pendant
+# N validations consécutives. 0 = désactivé.
+patience: 0
+
+# Autotuning cuDNN (shapes fixes -> gain de perf). Mettre à false pour un
+# déterminisme strict.
+cudnn_benchmark: true
 
 # --- Loss gains (YOLOv8 defaults) ---
 box_gain: 7.5

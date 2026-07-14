@@ -331,14 +331,16 @@ class ComputeLoss:
         )
         target_bboxes, target_scores, fg_mask = assigned
 
-        target_scores_sum = max(target_scores.sum().item(), 1)
+        # clamp(min=1) sur tenseur : évite une synchronisation GPU (.item())
+        # à chaque itération tout en gardant la même sémantique que max(x, 1).
+        target_scores_sum = target_scores.sum().clamp(min=1)
 
         # Classification loss (BCE)
         loss_cls = self.cls_loss(pred_scores, target_scores.to(data_type)).sum() / target_scores_sum
 
-        # Box + DFL loss
-        loss_box = torch.zeros(1, device=self.device)
-        loss_dfl = torch.zeros(1, device=self.device)
+        # Box + DFL loss (scalaires 0-d pour une agrégation homogène)
+        loss_box = torch.zeros((), device=self.device)
+        loss_dfl = torch.zeros((), device=self.device)
         if fg_mask.sum():
             target_bboxes = target_bboxes / stride_tensor
             loss_box, loss_dfl = self.box_loss(

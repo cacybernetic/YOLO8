@@ -61,7 +61,7 @@ from loguru import logger
 
 from yolov8.config import FinetuneConfig, load_finetune_config
 from yolov8.model import MyYolo
-from yolov8.utils import print_model_summary, setup_logging
+from yolov8.utils import print_model_summary, setup_logging, safe_torch_load
 
 
 # ---------------------------------------------------------------------------
@@ -79,10 +79,7 @@ def load_source_checkpoint(cfg: FinetuneConfig, device: torch.device):
     if not src_path.exists():
         raise FileNotFoundError(f"Poids source introuvables: {src_path}")
 
-    try:
-        ckpt = torch.load(src_path, map_location=device, weights_only=False)
-    except TypeError:
-        ckpt = torch.load(src_path, map_location=device)
+    ckpt = safe_torch_load(src_path, map_location=device)
 
     if isinstance(ckpt, dict) and 'model' in ckpt:
         state = ckpt['model']
@@ -272,7 +269,7 @@ def run_finetune_build(cfg: FinetuneConfig):
         num_classes=cfg.new_num_classes,
         input_size=cfg.image_size,
     ).to(device)
-    new_model.head.stride = new_model.head.stride.to(device)
+    # (head.stride est un buffer non persistant: suit .to(device))
 
     # --- Étape 2: chargement du checkpoint source ---
     src_state = load_source_checkpoint(cfg, device)

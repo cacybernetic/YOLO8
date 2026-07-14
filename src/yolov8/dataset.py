@@ -132,13 +132,21 @@ def vertical_flip(img, labels):
 
 
 def random_affine(img, labels, degrees=0.0, translate=0.1, scale=0.5,
-                  shear=0.0, perspective=0.0, border_value=(114, 114, 114)):
+                  shear=0.0, perspective=0.0, border_value=(114, 114, 114),
+                  dst_size=None):
     """Transformation affine/perspective aléatoire (translation, scale, rotation, shear).
 
     Les labels sont en format YOLO normalisé [cls, cx, cy, w, h] et sont réajustés.
     Les boites qui sortent du cadre ou deviennent trop petites sont filtrées.
+
+    Args:
+        dst_size: taille (carrée) de l'image de sortie. Si None, conserve la
+            taille d'entrée. Utilisé par la mosaïque : le canevas 2s×2s est
+            recadré autour de son centre vers s×s par la même transformation
+            (convention YOLOv5/v8).
     """
     h, w = img.shape[:2]
+    dw, dh = (dst_size, dst_size) if dst_size is not None else (w, h)
 
     # === Matrice de transformation composite ===
     C = np.eye(3)
@@ -160,17 +168,17 @@ def random_affine(img, labels, degrees=0.0, translate=0.1, scale=0.5,
     S[1, 0] = math.tan(random.uniform(-shear, shear) * math.pi / 180)
 
     T = np.eye(3)
-    T[0, 2] = random.uniform(0.5 - translate, 0.5 + translate) * w
-    T[1, 2] = random.uniform(0.5 - translate, 0.5 + translate) * h
+    T[0, 2] = random.uniform(0.5 - translate, 0.5 + translate) * dw
+    T[1, 2] = random.uniform(0.5 - translate, 0.5 + translate) * dh
 
     M = T @ S @ R @ P @ C
     # Identité → pas de transformation, skip pour économiser
-    if (M != np.eye(3)).any():
+    if (dw, dh) != (w, h) or (M != np.eye(3)).any():
         if perspective > 0:
-            img = cv2.warpPerspective(img, M, dsize=(w, h),
+            img = cv2.warpPerspective(img, M, dsize=(dw, dh),
                                       borderValue=border_value)
         else:
-            img = cv2.warpAffine(img, M[:2], dsize=(w, h),
+            img = cv2.warpAffine(img, M[:2], dsize=(dw, dh),
                                  borderValue=border_value)
 
     # === Ajustement des labels ===
@@ -211,13 +219,15 @@ def random_affine(img, labels, degrees=0.0, translate=0.1, scale=0.5,
     new_x2 = corners[:, :, 0].max(axis=1)
     new_y2 = corners[:, :, 1].max(axis=1)
 
-    # Clip dans l'image
-    new_x1 = new_x1.clip(0, w)
-    new_y1 = new_y1.clip(0, h)
-    new_x2 = new_x2.clip(0, w)
-    new_y2 = new_y2.clip(0, h)
+    # Clip dans l'image de sortie
+    new_x1 = new_x1.clip(0, dw)
+    new_y1 = new_y1.clip(0, dh)
+    new_x2 = new_x2.clip(0, dw)
+    new_y2 = new_y2.clip(0, dh)
 
     # Filtrage: boites dégénérées ou trop petites, ou ratio d'aspect aberrant
+    # (ar < 100 = convention YOLOv5/v8; un seuil plus bas supprimerait des
+    # objets très allongés légitimes: poteaux, lignes, barrières...)
     new_w = new_x2 - new_x1
     new_h = new_y2 - new_y1
     orig_w = (x2 - x1) * s
@@ -225,7 +235,7 @@ def random_affine(img, labels, degrees=0.0, translate=0.1, scale=0.5,
     ar = np.maximum(new_w / (new_h + 1e-9), new_h / (new_w + 1e-9))
     keep = (new_w > 2) & (new_h > 2) & \
            (new_w * new_h / (orig_w * orig_h + 1e-9) > 0.1) & \
-           (ar < 20)
+           (ar < 100)
 
     labels = labels[keep]
     if labels.shape[0] == 0:
@@ -234,10 +244,10 @@ def random_affine(img, labels, degrees=0.0, translate=0.1, scale=0.5,
     new_x1 = new_x1[keep]; new_y1 = new_y1[keep]
     new_x2 = new_x2[keep]; new_y2 = new_y2[keep]
 
-    labels[:, 1] = ((new_x1 + new_x2) / 2) / w  # cx
-    labels[:, 2] = ((new_y1 + new_y2) / 2) / h  # cy
-    labels[:, 3] = (new_x2 - new_x1) / w        # w
-    labels[:, 4] = (new_y2 - new_y1) / h        # h
+    labels[:, 1] = ((new_x1 + new_x2) / 2) / dw  # cx
+    labels[:, 2] = ((new_y1 + new_y2) / 2) / dh  # cy
+    labels[:, 3] = (new_x2 - new_x1) / dw        # w
+    labels[:, 4] = (new_y2 - new_y1) / dh        # h
     return img, labels
 
 
@@ -315,6 +325,9 @@ DEFAULT_AUGMENT_PARAMS = {
     # Flips
     'flip_lr': 0.5,           # probabilité flip horizontal
     'flip_ud': 0.0,           # probabilité flip vertical (0 par défaut)
+    # Mosaïque (4 images combinées) — défaut YOLOv8: 1.0.
+    # Désactivée en fin d'entraînement via `close_mosaic` (cf. train.yaml).
+    'mosaic': 1.0,
     # MixUp
     'mixup': 0.0,             # probabilité d'appliquer MixUp
     # Cutout
@@ -379,8 +392,10 @@ class YOLODataset(Dataset):
         if len(all_images) == 0:
             raise RuntimeError(f"Aucune image trouvée dans {images_dir}")
 
-        # Scan + filtrage des échantillons valides
-        self.image_paths, self.label_paths = self._scan_and_filter(
+        # Scan + filtrage des échantillons valides.
+        # Les labels sont parsés une seule fois ici et gardés en mémoire
+        # (self.labels) : évite une relecture disque à chaque __getitem__.
+        self.image_paths, self.label_paths, self.labels = self._scan_and_filter(
             all_images, labels_dir,
             strict=strict, verbose=verbose, check_images=check_images,
         )
@@ -407,7 +422,7 @@ class YOLODataset(Dataset):
         En mode non-strict, les échantillons invalides sont filtrés avec un warning.
         En mode strict, la première erreur lève une exception.
         """
-        valid_images, valid_labels = [], []
+        valid_images, valid_labels, cached_labels = [], [], []
         stats = {
             'total': len(image_paths),
             'missing_label': 0,
@@ -433,8 +448,8 @@ class YOLODataset(Dataset):
         for img_path in iterator:
             label_path = labels_dir / (img_path.stem + '.txt')
 
-            # 1) Validation du label
-            reason, had_bad_lines = self._check_label_file(label_path)
+            # 1) Validation + parse du label (mis en cache)
+            reason, had_bad_lines, parsed = self._check_label_file(label_path)
             if reason is not None:
                 stats[reason] += 1
                 if len(errors_sample) < 5:
@@ -456,6 +471,7 @@ class YOLODataset(Dataset):
 
             valid_images.append(img_path)
             valid_labels.append(label_path)
+            cached_labels.append(parsed)
             stats['kept'] += 1
             if had_bad_lines:
                 stats['kept_with_cleaning'] += 1
@@ -480,7 +496,7 @@ class YOLODataset(Dataset):
                 logger.info(f"  - {stats['kept_with_cleaning']} fichier(s) conservés après "
                             f"nettoyage de lignes malformées")
 
-        return valid_images, valid_labels
+        return valid_images, valid_labels, cached_labels
 
     @staticmethod
     def _check_image_file(img_path):
@@ -507,30 +523,34 @@ class YOLODataset(Dataset):
 
     @staticmethod
     def _check_label_file(label_path):
-        """Vérifie la validité d'un fichier label YOLO.
+        """Vérifie et parse un fichier label YOLO en un seul passage.
 
         Retourne:
-            (reason, had_bad_lines)
-            reason: None si valide (au moins 1 ligne correcte), sinon une chaîne
-                    parmi {'missing_label', 'empty_label', 'bad_format', 'bad_values'}
+            (reason, had_bad_lines, labels)
+            reason: None si valide (au moins 1 ligne correcte ou fichier vide),
+                    sinon une chaîne parmi
+                    {'missing_label', 'empty_label', 'bad_format', 'bad_values'}
             had_bad_lines: True si >=1 ligne a été droppée mais le fichier reste
                            globalement utilisable (au moins 1 ligne valide)
+            labels: np.ndarray (N, 5) float32 des lignes valides (mis en cache
+                    par le scan pour éviter de relire le disque à chaque
+                    __getitem__), ou None si le fichier est invalide.
         """
         if not label_path.exists():
-            return 'missing_label', False
+            return 'missing_label', False, None
 
         try:
             with open(label_path, 'r') as f:
                 raw_lines = f.readlines()
         except OSError:
-            return 'bad_format', False
+            return 'bad_format', False, None
 
         raw_lines = [l.strip() for l in raw_lines if l.strip()]
         if len(raw_lines) == 0:
             # Un fichier vide est accepté (image sans objet) — c'est valide.
-            return None, False
+            return None, False, np.zeros((0, 5), dtype=np.float32)
 
-        n_good = 0
+        valid = []
         n_bad = 0
         worst_reason = None  # pour classer les erreurs si tout le fichier est mauvais
 
@@ -542,13 +562,14 @@ class YOLODataset(Dataset):
                     worst_reason = 'bad_format'
                 continue
             try:
-                cls, cx, cy, w, h = [float(x) for x in parts]
+                row = [float(x) for x in parts]
             except ValueError:
                 n_bad += 1
                 if worst_reason is None:
                     worst_reason = 'bad_format'
                 continue
 
+            cls, cx, cy, w, h = row
             # Validation des valeurs
             if cls < 0 or cls != int(cls):
                 n_bad += 1
@@ -563,61 +584,22 @@ class YOLODataset(Dataset):
                 worst_reason = 'bad_values'
                 continue
 
-            n_good += 1
+            valid.append(row)
 
-        if n_good == 0:
-            return worst_reason, False
-        return None, (n_bad > 0)
+        if len(valid) == 0:
+            return worst_reason, False, None
+        return None, (n_bad > 0), np.array(valid, dtype=np.float32)
 
     def __len__(self):
         return len(self.image_paths)
 
-    def load_labels(self, label_path):
-        """Charge un fichier label YOLO -> (N, 5).
-
-        Les lignes malformées (nombre de colonnes incorrect, valeurs non
-        convertibles, valeurs hors [0,1]) sont silencieusement ignorées.
-        Le filtrage en amont (dans _scan_and_filter) a déjà écarté les
-        fichiers entièrement invalides, donc cette fonction est une sécurité
-        supplémentaire.
-        """
-        if not label_path.exists():
-            return np.zeros((0, 5), dtype=np.float32)
-        with open(label_path, 'r') as f:
-            raw_lines = [l.strip() for l in f.readlines() if l.strip()]
-        if len(raw_lines) == 0:
-            return np.zeros((0, 5), dtype=np.float32)
-
-        valid = []
-        for line in raw_lines:
-            parts = line.split()
-            if len(parts) != 5:
-                continue
-            try:
-                row = [float(x) for x in parts]
-            except ValueError:
-                continue
-            cls, cx, cy, w, h = row
-            if cls < 0 or cls != int(cls):
-                continue
-            if not (0.0 <= cx <= 1.0 and 0.0 <= cy <= 1.0):
-                continue
-            if not (0.0 < w <= 1.0 and 0.0 < h <= 1.0):
-                continue
-            valid.append(row)
-
-        if len(valid) == 0:
-            return np.zeros((0, 5), dtype=np.float32)
-        return np.array(valid, dtype=np.float32)
-
     def _load_and_preprocess(self, idx):
-        """Lit une image + ses labels et applique letterbox (labels YOLO normalisés).
+        """Lit une image, récupère ses labels en cache et applique letterbox.
 
         Retourne None si l'image est illisible (corrompue, disparue, etc.)
         L'appelant doit gérer ce cas.
         """
         img_path = self.image_paths[idx]
-        label_path = self.label_paths[idx]
 
         # Décodage via imdecode pour éviter les crashs bruyants de cv2.imread
         try:
@@ -632,57 +614,153 @@ class YOLODataset(Dataset):
             return None
 
         orig_h, orig_w = img.shape[:2]
-        labels = self.load_labels(label_path)
+        labels = self.labels[idx].copy()  # cache rempli au scan
         img, ratio, pad = letterbox(img, new_shape=self.image_size)
         labels = adjust_labels_after_letterbox(
             labels, ratio, pad, (orig_h, orig_w), self.image_size
         )
         return img, labels, str(img_path)
 
+    def _load_mosaic(self, idx):
+        """Mosaïque 4 images (convention YOLOv5/v8).
+
+        Construit un canevas 2s×2s dont le centre (xc, yc) est tiré
+        uniformément dans [0.5s, 1.5s]², y place 4 images letterboxées s×s
+        (l'échantillon demandé + 3 tirés au hasard), et ajuste les labels.
+        Le canevas est ensuite recadré vers s×s par `random_affine`
+        (dst_size=s) dans __getitem__.
+
+        Returns:
+            (canvas, labels): canvas (2s, 2s, 3) uint8,
+            labels (N, 5) [cls, cx, cy, w, h] normalisés sur 2s.
+        """
+        s = self.image_size
+        indices = [idx] + [random.randint(0, len(self) - 1) for _ in range(3)]
+        xc = int(random.uniform(0.5 * s, 1.5 * s))
+        yc = int(random.uniform(0.5 * s, 1.5 * s))
+        canvas = np.full((2 * s, 2 * s, 3), 114, dtype=np.uint8)
+        labels4 = []
+
+        for i, index in enumerate(indices):
+            result = self._load_and_preprocess(index)
+            attempts = 0
+            while result is None and attempts < 10:
+                index = random.randint(0, len(self) - 1)
+                result = self._load_and_preprocess(index)
+                attempts += 1
+            if result is None:
+                continue  # tuile laissée grise (dataset massivement corrompu)
+            img, labels, _ = result
+            h, w = img.shape[:2]
+
+            if i == 0:    # haut-gauche
+                x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h
+            elif i == 1:  # haut-droite
+                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, 2 * s), yc
+                x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
+            elif i == 2:  # bas-gauche
+                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(2 * s, yc + h)
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
+            else:         # bas-droite
+                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, 2 * s), min(2 * s, yc + h)
+                x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
+
+            canvas[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]
+            padw, padh = x1a - x1b, y1a - y1b
+
+            if labels.size:
+                lb = labels.copy()
+                # normalisé sur s -> pixels sur le canevas 2s
+                lb[:, 1] = lb[:, 1] * w + padw
+                lb[:, 2] = lb[:, 2] * h + padh
+                lb[:, 3] *= w
+                lb[:, 4] *= h
+                labels4.append(lb)
+
+        if labels4:
+            labels4 = np.concatenate(labels4, axis=0)
+            # Clip xyxy sur le canevas puis re-normalisation sur 2s
+            x1 = np.clip(labels4[:, 1] - labels4[:, 3] / 2, 0, 2 * s)
+            y1 = np.clip(labels4[:, 2] - labels4[:, 4] / 2, 0, 2 * s)
+            x2 = np.clip(labels4[:, 1] + labels4[:, 3] / 2, 0, 2 * s)
+            y2 = np.clip(labels4[:, 2] + labels4[:, 4] / 2, 0, 2 * s)
+            keep = ((x2 - x1) > 2) & ((y2 - y1) > 2)
+            labels4 = labels4[keep]
+            x1, y1, x2, y2 = x1[keep], y1[keep], x2[keep], y2[keep]
+            labels4[:, 1] = ((x1 + x2) / 2) / (2 * s)
+            labels4[:, 2] = ((y1 + y2) / 2) / (2 * s)
+            labels4[:, 3] = (x2 - x1) / (2 * s)
+            labels4[:, 4] = (y2 - y1) / (2 * s)
+        else:
+            labels4 = np.zeros((0, 5), dtype=np.float32)
+
+        return canvas, labels4
+
     def __getitem__(self, idx):
-        # Tentative de chargement avec fallback sur un autre échantillon si
-        # l'image est corrompue (au cas où le scan n'aurait pas attrapé le
-        # problème, par ex. fichier modifié depuis).
-        max_retries = min(10, len(self))
-        tried = set()
-        for attempt in range(max_retries):
-            if attempt > 0:
-                # Échantillon alternatif aléatoire
+        p = self.aug
+        use_mosaic = (self.augment and p['mosaic'] > 0
+                      and random.random() < p['mosaic'])
+
+        if use_mosaic:
+            img, labels = self._load_mosaic(idx)
+            img_path = str(self.image_paths[idx])
+        else:
+            result = self._load_and_preprocess(idx)
+
+            if result is None and not self.augment:
+                # En val/test: échec EXPLICITE. Substituer silencieusement un
+                # autre échantillon rendrait l'évaluation non déterministe et
+                # pourrait compter deux fois les mêmes GT.
+                raise RuntimeError(
+                    f"Image illisible en évaluation: {self.image_paths[idx]}. "
+                    f"Corrigez ou retirez ce fichier du dataset."
+                )
+
+            # En train: fallback sur un autre échantillon aléatoire (le scan a
+            # déjà validé les images, ce cas ne couvre que les fichiers
+            # modifiés/supprimés depuis le démarrage).
+            max_retries = min(10, len(self))
+            tried = {idx}
+            attempt = 0
+            while result is None and attempt < max_retries:
+                if attempt == 0:
+                    logger.warning(
+                        f"[dataset] image illisible ignorée: "
+                        f"{self.image_paths[idx].name} "
+                        f"(fallback sur un autre échantillon)")
                 idx = random.randint(0, len(self) - 1)
                 while idx in tried and len(tried) < len(self):
                     idx = random.randint(0, len(self) - 1)
-            tried.add(idx)
-
-            result = self._load_and_preprocess(idx)
-            if result is not None:
-                img, labels, img_path = result
-                break
-            # Log discret: on signale la première fois seulement
-            if attempt == 0:
-                logger.warning(f"[dataset] image illisible ignorée: "
-                               f"{self.image_paths[idx].name} (fallback sur un autre échantillon)")
-        else:
-            raise RuntimeError(
-                f"Impossible de charger un échantillon valide après {max_retries} "
-                f"tentatives. Vérifiez l'intégrité du dataset."
-            )
+                tried.add(idx)
+                result = self._load_and_preprocess(idx)
+                attempt += 1
+            if result is None:
+                raise RuntimeError(
+                    f"Impossible de charger un échantillon valide après "
+                    f"{max_retries} tentatives. Vérifiez l'intégrité du dataset."
+                )
+            img, labels, img_path = result
 
         if self.augment:
-            p = self.aug
-
             # 1) HSV color jitter
             if any(p[k] > 0 for k in ('hsv_h', 'hsv_s', 'hsv_v')):
                 img = hsv_augment(img, h_gain=p['hsv_h'],
                                   s_gain=p['hsv_s'], v_gain=p['hsv_v'])
 
             # 2) Random affine (translation, scale, rotation, shear, perspective)
-            if (p['degrees'] > 0 or p['translate'] > 0 or p['scale'] > 0 or
-                    p['shear'] > 0 or p['perspective'] > 0):
+            # Toujours appliqué après une mosaïque: c'est lui qui recadre le
+            # canevas 2s×2s vers s×s (dst_size), même si tous les paramètres
+            # géométriques sont à 0.
+            if use_mosaic or (p['degrees'] > 0 or p['translate'] > 0 or
+                              p['scale'] > 0 or p['shear'] > 0 or
+                              p['perspective'] > 0):
                 img, labels = random_affine(
                     img, labels,
                     degrees=p['degrees'], translate=p['translate'],
                     scale=p['scale'], shear=p['shear'],
                     perspective=p['perspective'],
+                    dst_size=self.image_size if use_mosaic else None,
                 )
 
             # 3) Flips

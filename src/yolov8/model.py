@@ -10,6 +10,8 @@ Modifications par rapport à la version initiale :
     afin de pouvoir calculer la loss en validation sans second forward
 """
 
+import math
+
 import torch
 import torch.nn as nn
 
@@ -202,8 +204,8 @@ class DFL(nn.Module):
         super().__init__()
         self.ch = ch
         self.conv = nn.Conv2d(in_channels=ch, out_channels=1, kernel_size=1, bias=False).requires_grad_(False)
-        x = torch.arange(ch, dtype=torch.float).view(1, ch, 1, 1)
-        self.conv.weight.data[:] = torch.nn.Parameter(x)
+        with torch.no_grad():
+            self.conv.weight.copy_(torch.arange(ch, dtype=torch.float).view(1, ch, 1, 1))
 
     def forward(self, x):
         b, c, a = x.shape
@@ -220,7 +222,10 @@ class Head(nn.Module):
         self.coordinates = self.ch * 4
         self.nc = num_classes
         self.no = self.coordinates + self.nc
-        self.stride = torch.zeros(3)  # Sera calibré par MyYolo après instantiation
+        # Buffer non persistant : suit model.to(device) sans entrer dans le
+        # state_dict (compatibilité avec les checkpoints existants).
+        # Calibré par MyYolo après instanciation.
+        self.register_buffer('stride', torch.zeros(3), persistent=False)
 
         d, w, r = yolo_params(version=version)
 
@@ -255,6 +260,31 @@ class Head(nn.Module):
         ])
 
         self.dfl = DFL(ch=self.ch)
+
+    def initialize_biases(self):
+        """Initialise les biais des dernières convolutions box/cls.
+
+        Sans cette initialisation, les logits cls démarrent à sigmoid≈0.5 sur
+        chaque (ancre, classe) : la BCE sommée sur ~b×8400×nc éléments puis
+        divisée par target_scores_sum produit une loss cls initiale de l'ordre
+        de 1e4-1e5 dont les gradients saturent le clipping pendant plusieurs
+        epochs. La convention (identique à Ultralytics `Detect.bias_init`) :
+          - box : biais à 1.0
+          - cls : biais à log(5 / nc / (640 / stride)^2), soit un prior faible
+            proportionnel au nombre d'objets attendus par cellule.
+
+        Doit être appelée APRÈS le calibrage des strides.
+        """
+        if bool(torch.all(self.stride == 0)):
+            raise RuntimeError(
+                "initialize_biases() requiert des strides calibrés "
+                "(appeler _initialize_strides d'abord)."
+            )
+        with torch.no_grad():
+            for box_branch, cls_branch, s in zip(self.box, self.cls, self.stride):
+                box_branch[-1].bias.fill_(1.0)
+                cls_branch[-1].bias.fill_(
+                    math.log(5 / self.nc / (640 / float(s)) ** 2))
 
     def forward(self, x):
         # x = [out_1, out_2, out_3] (liste mutable requise)
@@ -306,8 +336,10 @@ class MyYolo(nn.Module):
         self.neck = Neck(version=version)
         self.head = Head(version=version, num_classes=num_classes)
 
-        # Calibrage des strides de la tête via un forward factice
+        # Calibrage des strides de la tête via un forward factice, puis
+        # initialisation des biais de détection (dépend des strides).
         self._initialize_strides(input_size=input_size)
+        self.head.initialize_biases()
 
     def _initialize_strides(self, input_size):
         was_training = self.training

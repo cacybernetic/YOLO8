@@ -28,7 +28,7 @@ from yolov8.config import load_infer_config, InferConfig
 from yolov8.dataset import letterbox
 from yolov8.metrics import non_max_suppression
 from yolov8.model import MyYolo
-from yolov8.utils import setup_logging
+from yolov8.utils import setup_logging, safe_torch_load
 
 
 # ---------------------------------------------------------------------------
@@ -227,19 +227,25 @@ def run_inference(cfg: InferConfig, image_path: str,
     logger.info(f"device={device}")
 
     # --- Modèle ---
+    # (head.stride est un buffer non persistant: suit .to(device))
     model = MyYolo(version=cfg.version, num_classes=cfg.num_classes,
                    input_size=cfg.image_size).to(device)
-    model.head.stride = model.head.stride.to(device)
 
     weights_path = Path(cfg.weights)
     if not weights_path.exists():
         raise FileNotFoundError(f"Poids introuvables: {weights_path}")
-    try:
-        ckpt = torch.load(weights_path, map_location=device, weights_only=False)
-    except TypeError:
-        ckpt = torch.load(weights_path, map_location=device)
+    ckpt = safe_torch_load(weights_path, map_location=device)
     state = ckpt.get('model', ckpt) if isinstance(ckpt, dict) else ckpt
-    model.load_state_dict(state, strict=False)
+    # Chargement strict: inférer avec des poids partiellement chargés
+    # produirait des prédictions absurdes sans erreur visible.
+    try:
+        model.load_state_dict(state)
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"Les poids '{weights_path}' ne correspondent pas au modèle "
+            f"(version={cfg.version}, num_classes={cfg.num_classes}).\n"
+            f"  Détail: {e}"
+        ) from e
     model.eval()
     logger.info(f"Poids chargés: {weights_path}")
 

@@ -57,9 +57,12 @@ A companion Rust binary lets you run ONNX inference at native speed, either on a
 - **Export** to ONNX (with optional FP16, graph simplification, and numerical verification).
 - **Inference** on images from Python with a futuristic box renderer.
 - **Rust binary** for fast ONNX inference on images or live webcam (`src/main.rs`).
-- Rich augmentations: HSV jitter, affine transforms, MixUp, Cutout, blur, noise, grayscale.
-- Cosine and linear LR schedulers with warm-up.
-- Gradient accumulation, automatic checkpoint rotation, training history plots.
+- Rich augmentations: **mosaic** (with `close_mosaic`), HSV jitter, affine transforms, MixUp, Cutout, blur, noise, grayscale.
+- Cosine and linear LR schedulers with full warm-up (LR, per-group bias LR, momentum).
+- **EMA** (Exponential Moving Average) weights for validation and `best.pt`.
+- **Mixed precision** (AMP) training on CUDA.
+- Detection-head bias initialization (focal-loss prior) for stable early training.
+- Gradient accumulation, automatic checkpoint rotation, early stopping (`patience`), training history plots.
 
 ## Project structure
 
@@ -188,10 +191,18 @@ dataset/
 ├── train/
 │   ├── images/   # .jpg, .png, .jpeg, ...
 │   └── labels/   # one .txt per image
+├── val/          # recommended: used for per-epoch validation & best.pt selection
+│   ├── images/
+│   └── labels/
 └── test/
     ├── images/
     └── labels/
 ```
+
+> **Note**: if `val/` is missing, training falls back to `test/` for validation
+> (with a warning). This is a methodological leak — the model would be selected
+> on the same split used for the final evaluation — so a dedicated `val/` split
+> is strongly recommended.
 
 Each `.txt` label file contains one object per line:
 
@@ -377,7 +388,7 @@ All behavior is controlled through YAML files in `configs/`. The most important 
 
 | File | Key fields |
 |---|---|
-| `train.yaml` | `dataset_dir`, `num_classes`, `version` (`n/s/m/l/x`), `epochs`, `batch_size`, `device` |
+| `train.yaml` | `dataset_dir`, `num_classes`, `version` (`n/s/m/l/x`), `epochs`, `batch_size`, `device`, `val_split`, `amp`, `ema`, `close_mosaic`, `patience` |
 | `eval.yaml` | `dataset_dir`, `num_classes`, `weights`, `split` (`test` or `train`) |
 | `infer.yaml` | `weights`, `num_classes`, `class_names`, `conf_threshold` |
 | `export.yaml` | `weights`, `num_classes`, `output_path`, `simplify`, `half` |

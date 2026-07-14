@@ -28,7 +28,9 @@ from yolov8.metrics import MetricAccumulator, non_max_suppression
 from yolov8.model import MyYolo
 from loguru import logger
 
-from yolov8.utils import print_model_summary, plot_training_history, setup_logging, build_val_targets
+from yolov8.utils import (print_model_summary, plot_training_history,
+                          setup_logging, build_val_targets, safe_torch_load,
+                          ModelEMA)
 
 
 # ---------------------------------------------------------------------------
@@ -43,65 +45,108 @@ def set_seed(seed):
 
 
 # ---------------------------------------------------------------------------
-# Schedulers LR
+# Schedulers LR (warmup par groupe + warmup momentum, convention YOLOv8)
 # ---------------------------------------------------------------------------
 
-class CosineLR:
-    def __init__(self, max_lr, min_lr, warmup_epochs, total_epochs, num_steps):
+class BaseLR:
+    """Scheduler par step avec warmup complet.
+
+    Pendant le warmup (convention Ultralytics) :
+      - la LR des poids monte linéairement de 0 vers max_lr ;
+      - la LR des biais DESCEND de warmup_bias_lr (0.1) vers max_lr — les
+        biais peuvent bouger vite dès le départ sans déstabiliser les poids ;
+      - le momentum monte de warmup_momentum (0.8) vers momentum (0.937).
+
+    Garde-fous petits datasets : le warmup est plafonné pour ne jamais
+    consommer tout le budget de steps (sinon decay_steps <= 0 → crash
+    np.linspace de l'ancienne implémentation, ou LR figée à max_lr).
+    """
+
+    def __init__(self, max_lr, min_lr, warmup_epochs, total_epochs, num_steps,
+                 momentum=0.937, warmup_momentum=0.8, warmup_bias_lr=0.1):
+        total_steps = max(int(round(total_epochs * num_steps)), 1)
         warmup_steps = int(max(warmup_epochs * num_steps, 100))
-        decay_steps = int(total_epochs * num_steps - warmup_steps)
-        warmup_lr = np.linspace(min_lr, max_lr, warmup_steps)
-        decay_lr = [
-            min_lr + 0.5 * (max_lr - min_lr) * (1 + math.cos(math.pi * s / decay_steps))
-            for s in range(1, decay_steps + 1)
-        ]
-        self.lrs = np.concatenate((warmup_lr, decay_lr))
+        self.warmup_steps = max(min(warmup_steps, total_steps - 1), 0)
+        self.decay_steps = max(total_steps - self.warmup_steps, 1)
+        self.max_lr = max_lr
+        self.min_lr = min_lr
+        self.momentum = momentum
+        self.warmup_momentum = warmup_momentum
+        self.warmup_bias_lr = warmup_bias_lr
+
+    def _decayed_lr(self, s):
+        """LR après warmup, s dans [0, decay_steps]."""
+        raise NotImplementedError
 
     def step(self, global_step, optimizer):
-        idx = min(global_step, len(self.lrs) - 1)
-        for pg in optimizer.param_groups:
-            pg['lr'] = self.lrs[idx]
+        if global_step < self.warmup_steps:
+            f = (global_step + 1) / self.warmup_steps
+            momentum = (self.warmup_momentum +
+                        (self.momentum - self.warmup_momentum) * f)
+            for pg in optimizer.param_groups:
+                start_lr = self.warmup_bias_lr if pg.get('is_bias') else 0.0
+                pg['lr'] = start_lr + (self.max_lr - start_lr) * f
+                if 'momentum' in pg:
+                    pg['momentum'] = momentum
+        else:
+            s = min(global_step - self.warmup_steps, self.decay_steps)
+            lr = self._decayed_lr(s)
+            for pg in optimizer.param_groups:
+                pg['lr'] = lr
+                if 'momentum' in pg:
+                    pg['momentum'] = self.momentum
 
 
-class LinearLR:
-    def __init__(self, max_lr, min_lr, warmup_epochs, total_epochs, num_steps):
-        warmup_steps = int(max(warmup_epochs * num_steps, 100))
-        decay_steps = int(total_epochs * num_steps - warmup_steps)
-        warmup_lr = np.linspace(min_lr, max_lr, warmup_steps, endpoint=False)
-        decay_lr = np.linspace(max_lr, min_lr, decay_steps)
-        self.lrs = np.concatenate((warmup_lr, decay_lr))
-
-    def step(self, global_step, optimizer):
-        idx = min(global_step, len(self.lrs) - 1)
-        for pg in optimizer.param_groups:
-            pg['lr'] = self.lrs[idx]
+class CosineLR(BaseLR):
+    def _decayed_lr(self, s):
+        return self.min_lr + 0.5 * (self.max_lr - self.min_lr) * (
+            1 + math.cos(math.pi * s / self.decay_steps))
 
 
-def build_scheduler(name, max_lr, min_lr, warmup_epochs, total_epochs, num_steps):
+class LinearLR(BaseLR):
+    def _decayed_lr(self, s):
+        return self.max_lr + (self.min_lr - self.max_lr) * (s / self.decay_steps)
+
+
+def build_scheduler(name, max_lr, min_lr, warmup_epochs, total_epochs, num_steps,
+                    momentum=0.937, warmup_momentum=0.8, warmup_bias_lr=0.1):
     name = name.lower()
+    kwargs = dict(momentum=momentum, warmup_momentum=warmup_momentum,
+                  warmup_bias_lr=warmup_bias_lr)
     if name == 'cosine':
-        return CosineLR(max_lr, min_lr, warmup_epochs, total_epochs, num_steps)
+        return CosineLR(max_lr, min_lr, warmup_epochs, total_epochs,
+                        num_steps, **kwargs)
     if name == 'linear':
-        return LinearLR(max_lr, min_lr, warmup_epochs, total_epochs, num_steps)
+        return LinearLR(max_lr, min_lr, warmup_epochs, total_epochs,
+                        num_steps, **kwargs)
     raise ValueError(f"Scheduler inconnu: {name}")
 
 
 # ---------------------------------------------------------------------------
-# Optimizer helper (weight-decay séparé sur bias/BN)
+# Optimizer helper (weight-decay séparé sur bias/BN, groupe biais marqué)
 # ---------------------------------------------------------------------------
 
 def build_optimizer(model, lr, momentum, weight_decay):
-    p_decay, p_nodecay = [], []
+    """Trois groupes de paramètres (convention YOLOv8) :
+      0. poids >= 2D          -> weight decay
+      1. poids 1D (BN, etc.)  -> pas de decay
+      2. biais                -> pas de decay, marqué `is_bias` pour que le
+                                 scheduler leur applique le warmup LR dédié.
+    """
+    p_bias, p_nodecay, p_decay = [], [], []
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if param.ndim <= 1 or name.endswith('.bias'):
+        if name.endswith('.bias'):
+            p_bias.append(param)
+        elif param.ndim <= 1:
             p_nodecay.append(param)
         else:
             p_decay.append(param)
     return torch.optim.SGD([
-        {'params': p_nodecay, 'weight_decay': 0.0},
-        {'params': p_decay, 'weight_decay': weight_decay},
+        {'params': p_decay, 'weight_decay': weight_decay, 'is_bias': False},
+        {'params': p_nodecay, 'weight_decay': 0.0, 'is_bias': False},
+        {'params': p_bias, 'weight_decay': 0.0, 'is_bias': True},
     ], lr=lr, momentum=momentum, nesterov=True)
 
 
@@ -229,29 +274,25 @@ def rotate_checkpoints(ckpt_dir, max_keep):
             logger.warning(f"Impossible de supprimer {p}: {e}")
 
 
-def load_checkpoint_if_any(path, model, optimizer=None, device='cpu'):
+def load_checkpoint_if_any(path, model, device='cpu'):
     """Charge un checkpoint si `path` est fourni et existe.
 
-    Retourne (epoch_start, best_metric). Si aucun checkpoint n'est chargé,
-    retourne (0, -inf).
+    Retourne (epoch_start, best_metric, ckpt). `ckpt` (dict ou None) est
+    retourné pour que l'appelant restaure optimizer / historique / EMA sans
+    relire le fichier depuis le disque. Si aucun checkpoint n'est chargé,
+    retourne (0, -inf, None).
     """
     if not path:
-        return 0, -float('inf')
+        return 0, -float('inf'), None
 
     ckpt_path = Path(path)
     if not ckpt_path.exists():
         logger.warning(f"Le fichier '{path}' n'existe pas. "
                        f"Entraînement démarré from scratch.")
-        return 0, -float('inf')
+        return 0, -float('inf'), None
 
-    # weights_only=False est nécessaire pour charger l'optimizer et les
-    # métadonnées (epoch, config, val_metrics...). Depuis PyTorch >= 2.6,
-    # la valeur par défaut est True et refuse ce type de contenu.
     try:
-        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-    except TypeError:
-        # Anciennes versions de PyTorch qui n'ont pas l'argument weights_only
-        ckpt = torch.load(ckpt_path, map_location=device)
+        ckpt = safe_torch_load(ckpt_path, map_location=device)
     except Exception as e:
         raise RuntimeError(
             f"[resume] Impossible de lire le checkpoint '{path}': {e}"
@@ -274,19 +315,12 @@ def load_checkpoint_if_any(path, model, optimizer=None, device='cpu'):
             f"sauvegarde.\n  Détail: {e}"
         ) from e
 
-    if optimizer is not None and has_meta and 'optimizer' in ckpt:
-        try:
-            optimizer.load_state_dict(ckpt['optimizer'])
-        except Exception as e:
-            logger.warning(f"Impossible de restaurer l'état de l'optimizer "
-                           f"({e}). L'optimizer repart de zéro.")
-
     epoch_start = (ckpt.get('epoch', -1) + 1) if has_meta else 0
     best_metric = ckpt.get('best_metric', -float('inf')) if has_meta else -float('inf')
 
     logger.info(f"Reprise depuis '{path}' (epoch_start={epoch_start}, "
                 f"best_metric={best_metric:.4f})")
-    return epoch_start, best_metric
+    return epoch_start, best_metric, (ckpt if has_meta else None)
 
 
 def load_pretrained_weights(path, model, device='cpu'):
@@ -324,11 +358,7 @@ def load_pretrained_weights(path, model, device='cpu'):
             f"[pretrained] Fichier de poids pré-entraînés introuvable: {path}"
         )
 
-    # Même gestion weights_only que pour les checkpoints complets.
-    try:
-        ckpt = torch.load(weights_path, map_location=device, weights_only=False)
-    except TypeError:
-        ckpt = torch.load(weights_path, map_location=device)
+    ckpt = safe_torch_load(weights_path, map_location=device)
 
     # Accepte aussi bien un checkpoint complet qu'un state_dict nu.
     if isinstance(ckpt, dict) and 'model' in ckpt:
@@ -366,11 +396,31 @@ def load_pretrained_weights(path, model, device='cpu'):
 # Une epoch d'entraînement
 # ---------------------------------------------------------------------------
 
+def _apply_optimizer_step(model, optimizer, scaler, grad_clip, ema):
+    """Applique un pas d'optimisation (avec ou sans AMP) + mise à jour EMA."""
+    if scaler is not None:
+        if grad_clip and grad_clip > 0:
+            # unscale_ AVANT le clipping: sinon on clipperait des gradients
+            # multipliés par le scale factor du GradScaler.
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        if grad_clip and grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
+        optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    if ema is not None:
+        ema.update(model)
+
+
 def train_one_epoch(model, loader, loss_fn, optimizer, scheduler,
                     epoch, total_epochs, num_steps_per_epoch,
                     device, grad_clip, log_interval,
                     grad_accumulation_steps=1,
-                    freeze_feature_layers=False):
+                    freeze_feature_layers=False,
+                    scaler=None, ema=None, amp_enabled=False):
     """Exécute une epoch d'entraînement.
 
     Args:
@@ -379,6 +429,9 @@ def train_one_epoch(model, loader, loss_fn, optimizer, scheduler,
             nécessaire car `model.train()` propage train() à tous les
             sous-modules, ce qui réactiverait la mise à jour des statistiques
             running_mean/running_var dans les couches gelées.
+        scaler: torch.amp.GradScaler (ou None si AMP désactivé).
+        ema: ModelEMA mis à jour après chaque optimizer.step (ou None).
+        amp_enabled: active autocast pour le forward + la loss.
     """
     model.train()
 
@@ -393,7 +446,10 @@ def train_one_epoch(model, loader, loss_fn, optimizer, scheduler,
                                    torch.nn.BatchNorm3d)):
                 module.eval()
 
-    running = {'box': 0.0, 'cls': 0.0, 'dfl': 0.0, 'total': 0.0, 'n': 0}
+    # Accumulateurs GPU [box, cls, dfl, total] : une seule synchronisation
+    # host<->device par intervalle de log au lieu de 4 .item() par step.
+    running = torch.zeros(4, device=device)
+    n_seen = 0
     t0 = time.time()
 
     accum = max(int(grad_accumulation_steps), 1)
@@ -414,51 +470,50 @@ def train_one_epoch(model, loader, loss_fn, optimizer, scheduler,
         scheduler.step(global_step, optimizer)
 
         images = images.to(device, non_blocking=True)
+        bs = images.size(0)
 
-        outputs = model(images)
-        loss_box, loss_cls, loss_dfl = loss_fn(outputs, targets)
-        loss = loss_box + loss_cls + loss_dfl
+        with torch.autocast(device_type=device.type, enabled=amp_enabled):
+            outputs = model(images)
+            loss_box, loss_cls, loss_dfl = loss_fn(outputs, targets)
+            loss = loss_box + loss_cls + loss_dfl
 
-        # Mise à l'échelle pour l'accumulation de gradient
-        (loss / accum).backward()
+        # ×bs : la loss est normalisée par target_scores_sum (par cible) ;
+        # Ultralytics rétropropage `loss.sum() * batch_size` et les
+        # hyperparamètres (max_lr=0.01, gains 7.5/0.5/1.5) sont calibrés pour
+        # cette échelle de gradient. Sans ce facteur, les gradients seraient
+        # ~bs× plus faibles que la recette de référence.
+        scaled = loss * bs / accum
+        if scaler is not None:
+            scaler.scale(scaled).backward()
+        else:
+            scaled.backward()
         has_pending_grads = True
 
         # Pas d'optimisation seulement aux frontières d'accumulation.
         # Le reste (accumulation incomplète en fin d'epoch) est flushé APRÈS la boucle.
         if (step + 1) % accum == 0:
-            if grad_clip and grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
+            _apply_optimizer_step(model, optimizer, scaler, grad_clip, ema)
             has_pending_grads = False
 
-        bs = images.size(0)
-        running['box'] += loss_box.item() * bs
-        running['cls'] += loss_cls.item() * bs
-        running['dfl'] += loss_dfl.item() * bs
-        running['total'] += loss.item() * bs
-        running['n'] += bs
-
-        # Moyennes courantes (running averages) depuis le début de l'epoch
-        n_seen = max(running['n'], 1)
-        avg_loss = running['total'] / n_seen
-        avg_box = running['box'] / n_seen
-        avg_cls = running['cls'] / n_seen
-        avg_dfl = running['dfl'] / n_seen
-
-        # Mise à jour de la barre de progression avec les moyennes
-        pbar.set_postfix({
-            'lr': f"{optimizer.param_groups[0]['lr']:.5f}",
-            'loss': f"{avg_loss:.4f}",
-            'box': f"{avg_box:.4f}",
-            'cls': f"{avg_cls:.4f}",
-            'dfl': f"{avg_dfl:.4f}",
-        })
+        # Accumulation des pertes (valeurs par cible, non ×bs) pondérées par bs
+        running += torch.stack((loss_box.detach(), loss_cls.detach(),
+                                loss_dfl.detach(), loss.detach())) * bs
+        n_seen += bs
 
         if log_interval and ((step + 1) % log_interval == 0):
+            # Synchronisation unique pour le log
+            avg_box, avg_cls, avg_dfl, avg_loss = (running / max(n_seen, 1)).tolist()
+            lr_now = optimizer.param_groups[0]['lr']
+            pbar.set_postfix({
+                'lr': f"{lr_now:.5f}",
+                'loss': f"{avg_loss:.4f}",
+                'box': f"{avg_box:.4f}",
+                'cls': f"{avg_cls:.4f}",
+                'dfl': f"{avg_dfl:.4f}",
+            })
             pbar.write(
                 f"  step {step+1}/{total_steps} "
-                f"| lr {optimizer.param_groups[0]['lr']:.5f} "
+                f"| lr {lr_now:.5f} "
                 f"| avg_loss {avg_loss:.4f} "
                 f"(box {avg_box:.4f} cls {avg_cls:.4f} dfl {avg_dfl:.4f})"
             )
@@ -467,18 +522,16 @@ def train_one_epoch(model, loader, loss_fn, optimizer, scheduler,
     # d'accumulation, on applique quand même ce qui a été accumulé pour ne pas
     # perdre ces gradients.
     if has_pending_grads:
-        if grad_clip and grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
+        _apply_optimizer_step(model, optimizer, scaler, grad_clip, ema)
         has_pending_grads = False
 
-    n = max(running['n'], 1)
+    n = max(n_seen, 1)
+    avg_box, avg_cls, avg_dfl, avg_loss = (running / n).tolist()
     elapsed = time.time() - t0
     logger.success(f"epoch {epoch+1} terminée en {elapsed:.1f}s "
-                   f"| box={running['box']/n:.4f} cls={running['cls']/n:.4f} "
-                   f"dfl={running['dfl']/n:.4f} total={running['total']/n:.4f}")
-    return {k: v / n for k, v in running.items() if k != 'n'}
+                   f"| box={avg_box:.4f} cls={avg_cls:.4f} "
+                   f"dfl={avg_dfl:.4f} total={avg_loss:.4f}")
+    return {'box': avg_box, 'cls': avg_cls, 'dfl': avg_dfl, 'total': avg_loss}
 
 
 # ---------------------------------------------------------------------------
@@ -520,17 +573,17 @@ def validate(model, loader, device, image_size, conf_threshold, iou_threshold,
             inference_out, raw_outputs = out, None
 
         # --- Calcul des pertes sur la validation ---
+        # Pas de try/except large ici: une erreur récurrente (device, dtype,
+        # shapes) produirait des courbes val silencieusement à zéro. On
+        # préfère échouer explicitement (fail fast).
         if loss_fn is not None and raw_outputs is not None:
-            try:
-                lb, lc, ld = loss_fn(raw_outputs, targets)
-                bs = images.size(0)
-                losses_sum['box']   += float(lb.item()) * bs
-                losses_sum['cls']   += float(lc.item()) * bs
-                losses_sum['dfl']   += float(ld.item()) * bs
-                losses_sum['total'] += float((lb + lc + ld).item()) * bs
-                n_samples += bs
-            except Exception as e:
-                pbar.write(f"[val] échec calcul loss sur ce batch: {e}")
+            lb, lc, ld = loss_fn(raw_outputs, targets)
+            bs = images.size(0)
+            losses_sum['box']   += float(lb.item()) * bs
+            losses_sum['cls']   += float(lc.item()) * bs
+            losses_sum['dfl']   += float(ld.item()) * bs
+            losses_sum['total'] += float((lb + lc + ld).item()) * bs
+            n_samples += bs
 
         # --- NMS + accumulation des métriques de détection ---
         preds = non_max_suppression(
@@ -573,37 +626,73 @@ def main():
 
     cfg: TrainConfig = load_train_config(args.config)
     set_seed(cfg.seed)
-    device = torch.device(cfg.device if torch.cuda.is_available()
-                          or not cfg.device.startswith('cuda') else 'cpu')
+    if cfg.device.startswith('cuda') and not torch.cuda.is_available():
+        logger.warning("CUDA indisponible, fallback sur CPU")
+        device = torch.device('cpu')
+    else:
+        device = torch.device(cfg.device)
     logger.info(f"device={device}")
+
+    # Autotuning cuDNN: gain de perf notable car nos shapes sont fixes
+    # (letterbox carré). À désactiver via cudnn_benchmark: false si besoin
+    # d'un déterminisme strict.
+    if device.type == 'cuda' and cfg.cudnn_benchmark:
+        torch.backends.cudnn.benchmark = True
+
+    # --- Split de validation ---
+    # La sélection du meilleur modèle DOIT se faire sur un split val dédié:
+    # sélectionner sur le test set (puis évaluer dessus) est une fuite
+    # méthodologique qui rend les métriques finales optimistes.
+    val_split = cfg.val_split
+    if val_split is None:
+        if (Path(cfg.dataset_dir) / 'val' / 'images').is_dir():
+            val_split = 'val'
+        else:
+            val_split = 'test'
+            logger.warning(
+                "Aucun split 'val/' trouvé: la validation (et la sélection du "
+                "best) se fera sur 'test/'. ATTENTION: les métriques finales "
+                "de yleval sur ce même split seront optimistes. Créez un "
+                "split val dédié pour un protocole propre.")
+    logger.info(f"Split de validation: '{val_split}'")
 
     # --- Data ---
     train_ds = YOLODataset(cfg.dataset_dir, split='train',
                            image_size=cfg.image_size, augment=cfg.augment,
                            augment_params=cfg.augment_params,
                            check_images=cfg.check_images)
-    val_ds = YOLODataset(cfg.dataset_dir, split='test',
+    val_ds = YOLODataset(cfg.dataset_dir, split=val_split,
                          image_size=cfg.image_size, augment=False,
                          check_images=cfg.check_images)
     logger.info(f"Données: train={len(train_ds)} | val={len(val_ds)}")
 
-    train_loader = DataLoader(
-        train_ds, batch_size=cfg.batch_size, shuffle=True,
-        num_workers=cfg.num_workers, pin_memory=(cfg.device.startswith('cuda')),
-        collate_fn=YOLODataset.collate_fn, drop_last=True,
-    )
+    pin_memory = (device.type == 'cuda')
+    persistent = cfg.num_workers > 0
+    # Generator dédié: rend l'ordre de shuffle reproductible avec le seed
+    data_generator = torch.Generator()
+    data_generator.manual_seed(cfg.seed)
+
+    def make_train_loader():
+        return DataLoader(
+            train_ds, batch_size=cfg.batch_size, shuffle=True,
+            num_workers=cfg.num_workers, pin_memory=pin_memory,
+            collate_fn=YOLODataset.collate_fn, drop_last=True,
+            persistent_workers=persistent, generator=data_generator,
+        )
+
+    train_loader = make_train_loader()
     val_loader = DataLoader(
         val_ds, batch_size=cfg.batch_size, shuffle=False,
-        num_workers=cfg.num_workers, pin_memory=(cfg.device.startswith('cuda')),
+        num_workers=cfg.num_workers, pin_memory=pin_memory,
         collate_fn=YOLODataset.collate_fn, drop_last=False,
+        persistent_workers=persistent,
     )
     num_steps_per_epoch = max(len(train_loader), 1)
 
     # --- Model ---
+    # (head.stride est un buffer: il suit .to(device) automatiquement)
     model = MyYolo(version=cfg.version, num_classes=cfg.num_classes,
                    input_size=cfg.image_size).to(device)
-    # S'assurer que les strides sont sur le bon device
-    model.head.stride = model.head.stride.to(device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     logger.info(f"Modèle: YOLOv8-{cfg.version} | {n_params:.3f}M params | "
                 f"strides={model.head.stride.tolist()}")
@@ -643,12 +732,13 @@ def main():
     startup_mode = None  # 'resume' | 'pretrained' | 'scratch'
     epoch_start = 0
     best_metric = -float('inf')
+    resume_ckpt = None   # dict du checkpoint (un seul torch.load pour tout)
 
     if resume_path is not None:
         # MODE 1: reprise complète
         startup_mode = 'resume'
-        epoch_start, best_metric = load_checkpoint_if_any(
-            resume_path, model, optimizer=None, device=device
+        epoch_start, best_metric, resume_ckpt = load_checkpoint_if_any(
+            resume_path, model, device=device
         )
     elif cfg.pretrained_weights:
         # MODE 2: démarrage avec poids initiaux (fine-tune ou transfer learning)
@@ -674,25 +764,52 @@ def main():
                                 weight_decay=cfg.weight_decay)
     scheduler = build_scheduler(cfg.scheduler, cfg.max_lr, cfg.min_lr,
                                 cfg.warmup_epochs, cfg.epochs,
-                                num_steps_per_epoch)
+                                num_steps_per_epoch,
+                                momentum=cfg.momentum,
+                                warmup_momentum=cfg.warmup_momentum,
+                                warmup_bias_lr=cfg.warmup_bias_lr)
 
-    # Chargement différé de l'état de l'optimizer UNIQUEMENT en mode resume.
+    # Restauration de l'état de l'optimizer UNIQUEMENT en mode resume
+    # (depuis le checkpoint déjà chargé — pas de relecture disque).
     # En mode pretrained_weights ou scratch, on démarre avec un optimizer frais
     # même si le fichier source contenait un état d'optimizer.
     # En mode freeze, les param_groups sont différents (moins de paramètres),
     # donc l'état de l'optimizer stocké devient incompatible et doit être ignoré.
     if startup_mode == 'resume' and not cfg.freeze_feature_layers:
-        try:
-            ckpt = torch.load(resume_path, map_location=device, weights_only=False)
-            if isinstance(ckpt, dict) and 'optimizer' in ckpt:
-                optimizer.load_state_dict(ckpt['optimizer'])
+        if resume_ckpt is not None and 'optimizer' in resume_ckpt:
+            try:
+                optimizer.load_state_dict(resume_ckpt['optimizer'])
                 logger.info("État de l'optimizer restauré")
-        except Exception as e:
-            logger.warning(f"Impossible de restaurer l'optimizer ({e}). "
-                           f"Poursuite avec un optimizer fresh.")
+            except Exception as e:
+                logger.warning(f"Impossible de restaurer l'optimizer ({e}). "
+                               f"Poursuite avec un optimizer fresh.")
     elif startup_mode == 'resume' and cfg.freeze_feature_layers:
         logger.info("État de l'optimizer IGNORÉ "
                     "(freeze_feature_layers actif, groupes de params incompatibles)")
+
+    # --- EMA (Exponential Moving Average des poids) ---
+    # Créée APRÈS le chargement des poids pour partir de l'état courant.
+    # La validation et best.pt utilisent l'EMA: métrique nettement plus stable.
+    ema = None
+    if cfg.ema:
+        ema = ModelEMA(model, decay=cfg.ema_decay, tau=cfg.ema_tau)
+        if (startup_mode == 'resume' and resume_ckpt is not None
+                and 'ema' in resume_ckpt):
+            try:
+                ema.load_state_dict(resume_ckpt['ema'],
+                                    updates=resume_ckpt.get('ema_updates', 0))
+                logger.info(f"EMA restaurée (updates={ema.updates})")
+            except Exception as e:
+                logger.warning(f"Impossible de restaurer l'EMA ({e}). "
+                               f"EMA réinitialisée depuis les poids courants.")
+
+    # --- AMP (mixed precision) ---
+    amp_enabled = bool(cfg.amp and device.type == 'cuda')
+    scaler = torch.amp.GradScaler('cuda', enabled=True) if amp_enabled else None
+    if cfg.amp and not amp_enabled:
+        logger.info("AMP demandé mais device CPU: entraînement en FP32.")
+    elif amp_enabled:
+        logger.info("Mixed precision (AMP) activée")
 
     best_path = ckpt_dir / 'best.pt'
 
@@ -722,30 +839,48 @@ def main():
         'val_cls':     [],  'val_dfl':    [],
     }
     # Si on reprend depuis un checkpoint qui contenait déjà un historique,
-    # on le récupère pour que le graphique reste cohérent.
-    if startup_mode == 'resume' and resume_path is not None:
-        try:
-            ckpt_for_history = torch.load(resume_path, map_location='cpu',
-                                          weights_only=False)
-            if isinstance(ckpt_for_history, dict) and 'history' in ckpt_for_history:
-                history = ckpt_for_history['history']
-                logger.info(f"Historique restauré depuis le checkpoint "
-                            f"({len(history.get('epochs_train', []))} epochs train, "
-                            f"{len(history.get('epochs_val', []))} epochs val)")
-        except Exception as e:
-            logger.warning(f"Impossible de restaurer l'historique ({e}). "
-                           f"Repart d'un historique vide.")
+    # on le récupère pour que le graphique reste cohérent (le checkpoint est
+    # déjà en mémoire: pas de relecture disque).
+    if startup_mode == 'resume' and resume_ckpt is not None and 'history' in resume_ckpt:
+        history = resume_ckpt['history']
+        logger.info(f"Historique restauré depuis le checkpoint "
+                    f"({len(history.get('epochs_train', []))} epochs train, "
+                    f"{len(history.get('epochs_val', []))} epochs val)")
+
+    # Le checkpoint de reprise n'est plus nécessaire: on libère la mémoire
+    # (il contient une copie complète des poids + optimizer).
+    resume_ckpt = None
 
     history_path = Path(cfg.history_plot_path)
 
+    mosaic_closed = False
+    epochs_no_improve = 0  # compteur pour l'early stopping (patience)
+
     for epoch in range(epoch_start, cfg.epochs):
         logger.info(f"=== Epoch {epoch+1}/{cfg.epochs} ===")
+
+        # --- close_mosaic: désactive mosaic+mixup sur les dernières epochs ---
+        # (convention YOLOv8: finir l'entraînement sur des images "réelles"
+        # améliore la précision finale). Le DataLoader est recréé car avec
+        # persistent_workers les workers gardent une copie du dataset.
+        if (cfg.close_mosaic > 0 and not mosaic_closed
+                and epoch >= cfg.epochs - cfg.close_mosaic
+                and (train_ds.aug.get('mosaic', 0) > 0
+                     or train_ds.aug.get('mixup', 0) > 0)):
+            logger.info(f"close_mosaic: mosaic/mixup désactivés pour les "
+                        f"{cfg.epochs - epoch} dernières epochs")
+            train_ds.aug['mosaic'] = 0.0
+            train_ds.aug['mixup'] = 0.0
+            mosaic_closed = True
+            train_loader = make_train_loader()
+
         train_stats = train_one_epoch(
             model, train_loader, loss_fn, optimizer, scheduler,
             epoch, cfg.epochs, num_steps_per_epoch,
             device, cfg.grad_clip, cfg.log_interval,
             grad_accumulation_steps=cfg.grad_accumulation_steps,
             freeze_feature_layers=cfg.freeze_feature_layers,
+            scaler=scaler, ema=ema, amp_enabled=amp_enabled,
         )
 
         # On ajoute toujours l'epoch d'entraînement à l'historique,
@@ -757,13 +892,18 @@ def main():
         history['train_dfl'].append(float(train_stats.get('dfl', 0.0)))
 
         val_metrics = {}
+        is_best = False
         if (epoch + 1) % cfg.val_interval == 0:
+            # La validation porte sur les poids EMA (plus stables) quand
+            # l'EMA est active — c'est aussi ce que sauvegarde best.pt.
+            eval_model = ema.ema if ema is not None else model
             val_metrics = validate(
-                model, val_loader, device, cfg.image_size,
+                eval_model, val_loader, device, cfg.image_size,
                 cfg.conf_threshold, cfg.iou_threshold,
                 loss_fn=loss_fn,    # IMPORTANT: passe loss_fn pour calcul des pertes val
             )
-            logger.info(f"[val] P={val_metrics['precision']:.4f} "
+            logger.info(f"[val{'(EMA)' if ema is not None else ''}] "
+                        f"P={val_metrics['precision']:.4f} "
                         f"R={val_metrics['recall']:.4f} "
                         f"mAP@0.5={val_metrics['map50']:.4f} "
                         f"mAP@0.5:0.95={val_metrics['map']:.4f} "
@@ -779,6 +919,17 @@ def main():
             history['val_cls'].append(float(val_metrics.get('cls', 0.0)))
             history['val_dfl'].append(float(val_metrics.get('dfl', 0.0)))
 
+            # Mise à jour du best AVANT la sauvegarde du checkpoint d'epoch:
+            # ainsi epoch_NNNN.pt embarque toujours le best_metric à jour et
+            # une reprise ne peut pas écraser best.pt avec un modèle moins bon.
+            metric = val_metrics.get(cfg.save_best_metric, None)
+            if metric is not None and metric > best_metric:
+                best_metric = metric
+                is_best = True
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+
         # Tracé du graphique d'historique (régénéré à chaque epoch).
         # Encapsulé dans try/except pour ne JAMAIS casser l'entraînement à cause
         # d'un problème de matplotlib (filesystem plein, backend manquant, etc.)
@@ -787,7 +938,7 @@ def main():
         except Exception as e:
             logger.warning(f"Échec du tracé de l'historique: {e}")
 
-        # Checkpoint d'epoch (inclut l'historique pour la continuité en cas de reprise)
+        # Checkpoint d'epoch (inclut l'historique et l'EMA pour la reprise)
         state = {
             'epoch': epoch,
             'model': model.state_dict(),
@@ -798,20 +949,32 @@ def main():
             'val_metrics': val_metrics,
             'history': history,
         }
+        if ema is not None:
+            state['ema'] = ema.ema.state_dict()
+            state['ema_updates'] = ema.updates
         epoch_ckpt = ckpt_dir / f"epoch_{epoch+1:04d}.pt"
         save_checkpoint(state, epoch_ckpt)
         logger.info(f"Checkpoint sauvegardé: {epoch_ckpt.name}")
         rotate_checkpoints(ckpt_dir, cfg.max_checkpoints)
 
-        # Best model
-        if val_metrics:
-            metric = val_metrics.get(cfg.save_best_metric, None)
-            if metric is not None and metric > best_metric:
-                best_metric = metric
-                state['best_metric'] = best_metric
-                save_checkpoint(state, best_path)
-                logger.success(f"Nouveau meilleur {cfg.save_best_metric}="
-                               f"{best_metric:.4f} -> {best_path}")
+        # Best model: best.pt stocke les poids ÉVALUÉS (EMA si active) sous la
+        # clé 'model', pour que yleval / ylinfer / ylexport utilisent
+        # directement les poids qui ont produit la meilleure métrique.
+        if is_best:
+            best_state = dict(state)
+            if ema is not None:
+                best_state['model'] = ema.ema.state_dict()
+            save_checkpoint(best_state, best_path)
+            logger.success(f"Nouveau meilleur {cfg.save_best_metric}="
+                           f"{best_metric:.4f} -> {best_path}")
+
+        # Early stopping (patience en nombre de validations sans amélioration)
+        if cfg.patience > 0 and epochs_no_improve >= cfg.patience:
+            logger.warning(
+                f"Early stopping: pas d'amélioration de "
+                f"{cfg.save_best_metric} depuis {cfg.patience} validations "
+                f"(best={best_metric:.4f}).")
+            break
 
     logger.success("Entraînement terminé.")
     logger.info(f"Graphique d'historique: {history_path}")

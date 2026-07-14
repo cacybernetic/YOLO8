@@ -21,6 +21,11 @@ class TrainConfig:
     augment: bool = True
     augment_params: Optional[Dict[str, Any]] = None  # voir DEFAULT_AUGMENT_PARAMS
     check_images: bool = True     # vérifie l'intégrité des images au démarrage (lent mais évite crashs)
+    # Split de validation utilisé pendant l'entraînement (sélection du best).
+    # None = auto: utilise 'val/' s'il existe, sinon 'test/' avec un warning
+    # (sélectionner le modèle sur le test set est une fuite méthodologique).
+    val_split: Optional[str] = None
+    close_mosaic: int = 10        # désactive mosaic+mixup sur les N dernières epochs (0 = jamais)
 
     # Modèle
     version: str = 'n'        # 'n', 's', 'm', 'l', 'x'
@@ -35,11 +40,20 @@ class TrainConfig:
     max_lr: float = 0.01
     min_lr: float = 0.0001
     warmup_epochs: float = 3.0
+    warmup_momentum: float = 0.8   # momentum de départ pendant le warmup
+    warmup_bias_lr: float = 0.1    # LR de départ des biais pendant le warmup
     momentum: float = 0.937
     weight_decay: float = 0.0005
     scheduler: str = 'cosine'  # 'cosine' ou 'linear'
     grad_clip: float = 10.0
     grad_accumulation_steps: int = 1   # accumulation de gradient sur N micro-batches
+    amp: bool = True              # mixed precision (autocast + GradScaler) sur CUDA
+    ema: bool = True              # Exponential Moving Average des poids
+    ema_decay: float = 0.9999
+    ema_tau: float = 2000.0
+    patience: int = 0             # early stopping: stop si pas d'amélioration
+                                  # de save_best_metric pendant N validations (0 = désactivé)
+    cudnn_benchmark: bool = True  # autotuning cuDNN (shapes fixes -> gain de perf)
 
     # Loss gains
     box_gain: float = 7.5

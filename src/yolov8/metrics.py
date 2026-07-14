@@ -9,6 +9,10 @@ from time import time
 import numpy as np
 import torch
 import torchvision
+from loguru import logger
+
+# np.trapz est supprimé dans NumPy >= 2.0 (renommé np.trapezoid)
+_trapezoid = getattr(np, 'trapezoid', None) or np.trapz
 
 
 # ---------------------------------------------------------------------------
@@ -29,10 +33,18 @@ def wh2xy(x):
 # Non-Maximum Suppression
 # ---------------------------------------------------------------------------
 
-def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.7):
-    """NMS par classe. `outputs`: (bs, 4+nc, n_anchors) - sortie brute du modèle en eval."""
+def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.7,
+                        max_det=300, time_limit=None):
+    """NMS par classe. `outputs`: (bs, 4+nc, n_anchors) - sortie brute du modèle en eval.
+
+    Args:
+        time_limit: budget temps en secondes (None = illimité, défaut).
+            ATTENTION: si le budget est dépassé, les images restantes du batch
+            reçoivent zéro prédiction — à ne JAMAIS activer pendant une
+            évaluation (mAP silencieusement tronquée). Utile uniquement pour
+            de l'inférence temps réel à latence bornée.
+    """
     max_wh = 7680
-    max_det = 300
     max_nms = 30000
 
     bs = outputs.shape[0]
@@ -40,7 +52,6 @@ def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.7):
     xc = outputs[:, 4:4 + nc].amax(1) > confidence_threshold  # candidats
 
     start = time()
-    limit = 0.5 + 0.05 * bs
     output = [torch.zeros((0, 6), device=outputs.device)] * bs
 
     for index, x in enumerate(outputs):
@@ -66,7 +77,10 @@ def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.7):
         boxes, scores = x[:, :4] + c, x[:, 4]
         indices = torchvision.ops.nms(boxes, scores, iou_threshold)[:max_det]
         output[index] = x[indices]
-        if (time() - start) > limit:
+        if time_limit is not None and (time() - start) > time_limit:
+            logger.warning(
+                f"NMS: budget temps dépassé ({time_limit:.2f}s), "
+                f"{bs - index - 1} image(s) du batch ignorée(s)")
             break
     return output
 
@@ -157,7 +171,7 @@ def compute_ap(tp, conf, pred_cls, target_cls, eps=1e-16):
             m_pre = np.concatenate(([1.0], precision[:, j], [0.0]))
             m_pre = np.flip(np.maximum.accumulate(np.flip(m_pre)))
             x = np.linspace(0, 1, 101)
-            ap[ci, j] = np.trapz(np.interp(x, m_rec, m_pre), x)
+            ap[ci, j] = _trapezoid(np.interp(x, m_rec, m_pre), x)
 
     f1 = 2 * p * r / (p + r + eps)
     i = _smooth(f1.mean(0), 0.1).argmax()
