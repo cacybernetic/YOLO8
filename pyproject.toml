@@ -41,6 +41,7 @@ dependencies = [
     "torch==2.8.0",
     "torchvision==0.23.0",
     "torchinfo==1.8.0",
+    "h5py>=3.10",
     "onnx==1.21.0",
     "onnxruntime==1.23.2",
     "onnxsim==0.6.2",
@@ -71,8 +72,9 @@ column_limit = 120
 where = ["src"]
 
 [project.scripts]
-yltrain = "yolov8.entrypoints.train:main"
-yleval = "yolov8.entrypoints.evaluate:main"
-ylinfer = "yolov8.entrypoints.infer:main"
-ylft = "yolov8.entrypoints.finetuning:main"
-ylexport = "yolov8.entrypoints.export:main"
+buildh5ds = "yolov8.entrypoints.buildds:main"
+trainyolo8 = "yolov8.entrypoints.train:main"
+evalyolo8 = "yolov8.entrypoints.evaluate:main"
+runyolo8 = "yolov8.entrypoints.inference:main"
+ftyolo8 = "yolov8.entrypoints.finetuning:main"
+exportw = "yolov8.entrypoints.exportmodel:main"
