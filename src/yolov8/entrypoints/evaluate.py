@@ -46,7 +46,7 @@ from yolov8.training import prepare_run_dir, save_config_used
 def load_model(cfg: EvalConfig, num_classes, device):
     """Build the model and load the weights with a strict check."""
     model = YOLO(version=cfg.model.version, num_classes=num_classes,
-                   input_size=cfg.dataset.image_size).to(device)
+                 input_size=cfg.dataset.image_size).to(device)
     weights_path = Path(cfg.weights)
     if not weights_path.exists():
         raise FileNotFoundError(f"Weights not found: {weights_path}")
@@ -151,8 +151,26 @@ def collect_predictions(model, loader, device, cfg, loss_fn, iou_v,
                     renders_dir / f"render_{rendered:03d}.jpg")
                 rendered += 1
 
+        _set_bar_metrics(pbar, losses_sum, n_samples,
+                         iou_sum_tp, iou_count_tp)
+
     return _finalize_collection(data, losses_sum, n_samples,
                                 iou_sum_tp, iou_count_tp, iou_v)
+
+
+def _set_bar_metrics(pbar, losses_sum, n_samples, iou_sum, iou_count):
+    """Show the running metric averages on the progress bar.
+
+    The values are the mean over all the images seen so far, so the
+    numbers converge to the ones written in results.csv at the end.
+    """
+    if not n_samples:
+        return
+    postfix = {key: f"{value / n_samples:.4f}"
+               for key, value in losses_sum.items()}
+    if iou_count:
+        postfix['iou'] = f"{iou_sum / iou_count:.4f}"
+    pbar.set_postfix(postfix)
 
 
 def _match_one_image(preds, gt, iou_v):
@@ -287,7 +305,7 @@ def evaluate(cfg: EvalConfig, run_dir):
                   best_conf, best_f1, class_names, num_classes)
     _write_figures(plotes_dir, per_class, class_names, data,
                    num_classes, best_conf)
-    logger.success(f"Evaluation done. Results in: {run_dir}")
+    logger.info(f"Evaluation done. Results in: {run_dir}")
 
 
 def _global_counts(data, best_conf):
@@ -321,8 +339,8 @@ def _write_tables(run_dir, per_class, metrics_thr, data, counts,
     results_csv = Path(run_dir) / 'results.csv'
     df_per_class.to_csv(per_class_csv, index=False)
     df_global.to_csv(results_csv, index=False)
-    logger.success(f"CSV written: {results_csv}")
-    logger.success(f"CSV written: {per_class_csv}")
+    logger.info(f"CSV written: {results_csv}")
+    logger.info(f"CSV written: {per_class_csv}")
 
     _log_table(df_global)
     if len(df_per_class) > 0:
@@ -354,7 +372,7 @@ def _write_figures(plotes_dir, per_class, class_names, data,
     plot_confusion_matrix(
         cm, class_names, plotes_dir / 'confusion_matrix.png',
         normalize=False)
-    logger.success(f"Figures written in: {plotes_dir}/")
+    logger.info(f"Figures written in: {plotes_dir}/")
 
 
 def main():

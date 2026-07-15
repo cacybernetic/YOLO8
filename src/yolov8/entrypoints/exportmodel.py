@@ -26,7 +26,7 @@ from yolov8.onnx_export import (YoloExportWrapper, export_to_onnx,
 
 def load_model(cfg: ExportConfig, device):
     model = YOLO(version=cfg.version, num_classes=cfg.num_classes,
-                   input_size=cfg.image_size).to(device)
+                 input_size=cfg.image_size).to(device)
     weights_path = Path(cfg.weights)
     if not weights_path.exists():
         raise FileNotFoundError(f"Weights not found: {weights_path}")
@@ -75,7 +75,7 @@ def run_export(cfg: ExportConfig):
     if cfg.half:
         convert_to_fp16(output_path)
 
-    logger.success(f"Export finished: {output_path}")
+    logger.info(f"Export finished: {output_path}")
     return output_path
 
 

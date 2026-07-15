@@ -308,9 +308,9 @@ class Trainer:
                     and self.opt_step % ckpt_step == 0:
                 self._save_checkpoint()
             step_bar.update(1)
+            self._set_bar_metrics(step_bar, self.train_meters.averages())
             if log_interval and (step + 1) % log_interval == 0:
-                self._log_train_step(step + 1, steps_per_epoch,
-                                     epoch, step_bar)
+                self._log_train_step(step + 1, steps_per_epoch, epoch)
         self._flush_pending_grads()
         step_bar.close()
 
@@ -390,26 +390,36 @@ class Trainer:
         if self._micro > 0:
             self._apply_optimizer_step()
 
-    def _log_train_step(self, step, total_steps, epoch, step_bar):
-        avg = self.train_meters.averages()
-        self._ensure_finite(
-            avg['total'],
-            f"epoch {epoch + 1}, step {step}/{total_steps}")
-        lr_now = self.optimizer.param_groups[0]['lr']
+    @staticmethod
+    def _set_bar_metrics(step_bar, avg):
+        """Show the running loss averages of the pass on a step bar.
+
+        The values are the mean over the batches seen so far in the
+        current epoch, so they are the same numbers as the ones the
+        logger prints later.
+        """
         step_bar.set_postfix({
             'loss': f"{avg['total']:.4f}",
             'box': f"{avg['box']:.4f}",
             'cls': f"{avg['cls']:.4f}",
             'dfl': f"{avg['dfl']:.4f}",
         })
+
+    def _log_train_step(self, step, total_steps, epoch):
+        avg = self.train_meters.averages()
+        self._ensure_finite(
+            avg['total'],
+            f"epoch {epoch + 1}, step {step}/{total_steps}")
+        lr_now = self.optimizer.param_groups[0]['lr']
         amp_note = ''
         if self.scaler is not None:
-            amp_note = f" | amp_scale {self.scaler.get_scale():.0f}"
+            amp_note = f" | amp_scale: {self.scaler.get_scale():.0f}"
         logger.info(
-            f"epoch {epoch + 1}/{self.cfg.optimization.epochs} | "
-            f"step {step}/{total_steps} | lr {lr_now:.5f} | "
-            f"avg_loss {avg['total']:.4f} (box {avg['box']:.4f} "
-            f"cls {avg['cls']:.4f} dfl {avg['dfl']:.4f}){amp_note}")
+            f"epoch: {epoch + 1}/{self.cfg.optimization.epochs} | "
+            f"step: {step}/{total_steps} | "
+            f"avg_loss: {avg['total']:.4f} [box: {avg['box']:.4f}, "
+            f"cls: {avg['cls']:.4f}, dfl: {avg['dfl']:.4f}]{amp_note} | "
+            f"lr: {lr_now:.5f}")
 
     # ------------------------------------------------------------------
     # Eval passes (val and test)
@@ -435,6 +445,7 @@ class Trainer:
         for images, targets, _paths in loader:
             self._eval_batch(model, images, targets, meters, accumulator)
             step_bar.update(1)
+            self._set_bar_metrics(step_bar, meters.averages())
             if ckpt_step > 0 and loader.position < total \
                     and loader.position % ckpt_step == 0:
                 eval_state = {

@@ -65,7 +65,7 @@ def export_to_onnx(wrapper, dummy_input, output_path, opset=17,
         torch.onnx.export(wrapper, dummy_input, str(output_path),
                           **kwargs)
     size_mb = output_path.stat().st_size / 1e6
-    logger.success(f"ONNX file written: {output_path} ({size_mb:.2f} MB)")
+    logger.info(f"ONNX file written: {output_path} ({size_mb:.2f} MB)")
 
 
 def check_onnx_graph(onnx_path):
@@ -78,9 +78,9 @@ def check_onnx_graph(onnx_path):
         return None
     model_onnx = onnx.load(str(onnx_path))
     onnx.checker.check_model(model_onnx)
-    logger.success(f"Valid ONNX graph "
-                   f"(ir_version={model_onnx.ir_version}, "
-                   f"opset={model_onnx.opset_import[0].version})")
+    logger.info(f"Valid ONNX graph "
+                f"(ir_version={model_onnx.ir_version}, "
+                f"opset={model_onnx.opset_import[0].version})")
     return model_onnx
 
 
@@ -103,7 +103,7 @@ def simplify_onnx(onnx_path, onnx_model=None):
             return
         onnx.save(simplified, str(onnx_path))
         new_size = Path(onnx_path).stat().st_size / 1e6
-        logger.success(f"Graph simplified and saved ({new_size:.2f} MB)")
+        logger.info(f"Graph simplified and saved ({new_size:.2f} MB)")
     except Exception as e:
         logger.error(f"Simplify failed: {e}")
 
@@ -123,7 +123,7 @@ def convert_to_fp16(onnx_path):
             model, keep_io_types=False)
         onnx.save(model_fp16, str(onnx_path))
         new_size = Path(onnx_path).stat().st_size / 1e6
-        logger.success(f"FP16 conversion done ({new_size:.2f} MB)")
+        logger.info(f"FP16 conversion done ({new_size:.2f} MB)")
     except Exception as e:
         logger.error(f"Half conversion failed: {e}")
 
@@ -155,9 +155,9 @@ def verify_numerical(wrapper, onnx_path, dummy_input, tolerance):
     mean_diff = float(abs_diff.mean())
     ok = max_diff <= tolerance
     if ok:
-        logger.success(f"Verify OK | max_abs_diff={max_diff:.2e} "
-                       f"mean_abs_diff={mean_diff:.2e} "
-                       f"(tol={tolerance:.0e})")
+        logger.info(f"Verify OK | max_abs_diff={max_diff:.2e} "
+                    f"mean_abs_diff={mean_diff:.2e} "
+                    f"(tol={tolerance:.0e})")
     else:
         logger.error(f"Verify FAILED | max_abs_diff={max_diff:.2e} "
                      f"mean_abs_diff={mean_diff:.2e} "

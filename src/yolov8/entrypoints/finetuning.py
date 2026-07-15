@@ -134,8 +134,8 @@ def save_finetune_checkpoint(model, cfg: FinetuneConfig, output_path):
     }
     atomic_save(state, output_path)
     size_mb = output_path.stat().st_size / 1e6
-    logger.success(f"Fine-tunable model written: {output_path} "
-                   f"({size_mb:.2f} MB)")
+    logger.info(f"Fine-tunable model written: {output_path} "
+                f"({size_mb:.2f} MB)")
 
 
 def run_finetune_build(cfg: FinetuneConfig):
@@ -145,8 +145,8 @@ def run_finetune_build(cfg: FinetuneConfig):
                 f"-> new_nc={cfg.new_num_classes}")
 
     new_model = YOLO(version=cfg.version,
-                       num_classes=cfg.new_num_classes,
-                       input_size=cfg.image_size).to(device)
+                     num_classes=cfg.new_num_classes,
+                     input_size=cfg.image_size).to(device)
     src_state = load_source_state(cfg, device)
     transfer_weights(src_state, new_model,
                      old_num_classes=cfg.old_num_classes,
@@ -168,7 +168,7 @@ def run_finetune_build(cfg: FinetuneConfig):
     output_path = Path(cfg.output_weights)
     save_finetune_checkpoint(new_model, cfg, output_path)
 
-    logger.success("Model ready for fine tuning.")
+    logger.info("Model ready for fine tuning.")
     logger.info("Next steps in train.yaml:")
     logger.info(f"  model.pretrained_weights: {output_path}")
     logger.info(f"  model.version: {cfg.version}")

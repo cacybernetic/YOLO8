@@ -167,7 +167,7 @@ def main():
 
     # --- Model ---
     model = YOLO(version=cfg.model.version, num_classes=len(names),
-                   input_size=cfg.dataset.image_size).to(device)
+                 input_size=cfg.dataset.image_size).to(device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     logger.info(f"Model: YOLOv8-{cfg.model.version} | "
                 f"{n_params:.3f}M params | "

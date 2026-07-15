@@ -8,9 +8,10 @@ LOSS_KEYS = ('box', 'cls', 'dfl', 'total')
 class LossMeters:
     """Weighted running sums of the four loss values.
 
-    The sums live on the compute device, so updating them does not
-    force a GPU synchronization at every step. The sync only happens
-    in averages() and state_dict() (log and checkpoint times).
+    The sums live on the compute device, so update() does not force a
+    GPU synchronization. The sync happens in averages() and
+    state_dict(). The training loop calls averages() at every step to
+    feed the progress bar, so it does sync once per step.
     """
 
     def __init__(self, device):

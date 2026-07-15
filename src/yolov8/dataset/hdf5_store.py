@@ -71,7 +71,7 @@ class Hdf5Builder:
             data=np.asarray(self._offsets, dtype=np.int64))
         self._file.close()
         size_mb = self.path.stat().st_size / 1e6
-        logger.success(f"HDF5 file written: {self.path} ({size_mb:.1f} MB)")
+        logger.info(f"HDF5 file written: {self.path} ({size_mb:.1f} MB)")
 
 
 def build_hdf5(dataset, output_path, augmented_copies=0, verbose=True):

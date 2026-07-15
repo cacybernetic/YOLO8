@@ -59,7 +59,7 @@ def main():
     else:
         logger.info("No test_path set: test split skipped")
 
-    logger.success("HDF5 build finished.")
+    logger.info("HDF5 build finished.")
 
 
 if __name__ == '__main__':
