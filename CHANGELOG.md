@@ -22,10 +22,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Evaluation Metrics results building.
 - Plotting of Training/Validation history.
 - Setting of logging system (loguru).
+- README: a **Model architecture** section (sizes and their scaling
+  factors, backbone, PAN-FPN neck, decoupled anchor-free head, DFL and
+  the two easy-to-miss details: branch widths and bias init) and a
+  **How the training works** section (the three loss terms, the TAL
+  assignment, parameter groups, warmup, EMA, the three passes). The
+  project tree was wrong about the Rust binaries (`yolov8rust/` and
+  `yololivers/`, not `src/main.rs`) and left out several modules.
+- `grad_norm` in the periodic training log: the gradient norm measured
+  **before** clipping, so it still says something useful when the
+  clipping is active. Shown as `n/a` on the logs that happen before
+  the first optimizer step (only when `log_interval < grad_accum`).
  
 
 ### Changed 
 
+- Training step log format. The fields use a `label: value` style, the
+  loss parts moved into brackets and `lr` moved to the end:
+  ```
+  epoch: 12/50 | step: 60/62 | avg_loss: 7.1637 [box: 2.0917, cls: 3.0699, dfl: 2.0020] | grad_norm: 0.2392 | lr: 0.00914
+  ```
+  With AMP on, an `amp_scale: N` field is inserted before `grad_norm`.
+- Progress bars now receive the **running average** of the metrics at
+  every loop turn. Before, the train bar was only refreshed every
+  `log_interval` steps (and never when `log_interval: 0`), and the
+  val / test / `evalyolo8` bars showed no metric at all. The eval bar
+  also shows the running mean IoU. Cost: `LossMeters.averages()` now
+  forces one GPU sync per step.
+- `logger.success` is reserved for a new best score (`New best <metric>
+  -> saved best.pt`). The end of epoch summary, the end of training,
+  the export, the evaluation and the HDF5 build lines are plain
+  `logger.info`, so a SUCCESS line in a log file always means the model
+  improved.
+- Under AMP, `unscale_` now runs before every optimizer step instead of
+  only when clipping is on, so the reported `grad_norm` is the true
+  unscaled norm and not the value multiplied by the AMP scale factor.
 - **BREAKING — model class renamed**: `MyYolo` is now `YOLO`
   (`from yolov8 import YOLO`). No alias is kept, so imports of
   `MyYolo` must be updated. Checkpoints are not affected: the class

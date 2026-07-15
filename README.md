@@ -23,6 +23,11 @@ inference on static images or live webcam feed.
 - [Description](#description)
 - [Features](#features)
 - [Project structure](#project-structure)
+- [Model architecture](#model-architecture)
+  - [Sizes](#sizes)
+  - [Backbone](#backbone)
+  - [Neck](#neck)
+  - [Head](#head)
 - [Installation](#installation)
 - [Dataset format](#dataset-format)
 - [Usage](#usage)
@@ -35,6 +40,11 @@ inference on static images or live webcam feed.
   - [7. Standalone ONNX scripts](#7-standalone-onnx-scripts-predictpy-and-livepy)
   - [8. Run inference in Rust](#8-run-inference-in-rust)
 - [Configuration files](#configuration-files)
+- [How the training works](#how-the-training-works)
+  - [The loss](#the-loss)
+  - [Which anchor learns which object (TAL)](#which-anchor-learns-which-object-tal)
+  - [Optimizer and schedule](#optimizer-and-schedule)
+  - [The three passes](#the-three-passes)
 - [Fault-tolerant training](#fault-tolerant-training)
 - [Documentation](#documentation)
 - [To contribute](#to-contribute)
@@ -96,46 +106,149 @@ either on a single image or in real-time from a webcam.
 ```
 .
 ├── src/yolov8/
-│   ├── modules/          # Conv, C2f, SPPF, DFL, Backbone, Neck, Head
-│   ├── model.py          # YOLO (backbone + neck + head)
-│   ├── lossfn.py         # TAL assigner + CIoU + DFL + BCE loss
+│   ├── modules/            # the building blocks of the network
+│   │   ├── scaling.py      # (depth, width, ratio) for n/s/m/l/x
+│   │   ├── conv.py         # Conv2d + BatchNorm + SiLU
+│   │   ├── c2f.py          # CSP block: split, bottlenecks, merge
+│   │   ├── sppf.py         # fast spatial pyramid pooling
+│   │   ├── dfl.py          # bin distribution -> one distance
+│   │   ├── anchors.py      # anchor centers + stride of each anchor
+│   │   ├── upsample.py     # nearest neighbor upsample
+│   │   ├── backbone.py     # CSPDarknet, returns P3/P4/P5
+│   │   ├── neck.py         # PAN-FPN fusion of the three scales
+│   │   └── head.py         # decoupled anchor-free detection head
+│   ├── model.py            # YOLO (backbone + neck + head)
+│   ├── lossfn.py           # TAL assigner + CIoU + DFL + BCE loss
 │   ├── dataset/
-│   │   ├── sources.py    # folder and zip dataset sources
-│   │   ├── scanner.py    # validation scan + JSON cache
-│   │   ├── transforms.py # letterbox, tensor conversion
-│   │   ├── augment.py    # all augmentations + Augmenter
-│   │   ├── yolo_dataset.py
-│   │   ├── hdf5_store.py # HDF5 build + read
-│   │   ├── adapter.py    # resumable DataLoader adapter
-│   │   └── factory.py    # dataset construction from the config
-│   ├── metrics/          # NMS, mAP, per-class AP, confusion matrix
+│   │   ├── sources.py      # folder and zip dataset sources
+│   │   ├── scanner.py      # validation scan + JSON cache
+│   │   ├── validation.py   # image and label file checks
+│   │   ├── names.py        # class names from data.yaml
+│   │   ├── transforms.py   # letterbox, tensor conversion
+│   │   ├── augment.py      # all augmentations + Augmenter
+│   │   ├── yolo_dataset.py # the detection Dataset itself
+│   │   ├── hdf5_store.py   # HDF5 build + read
+│   │   ├── adapter.py      # resumable DataLoader adapter
+│   │   └── factory.py      # dataset construction from the config
+│   ├── metrics/
+│   │   ├── boxes.py        # IoU and box format helpers
+│   │   ├── nms.py          # non maximum suppression
+│   │   ├── ap.py           # COCO 101-point AP
+│   │   └── evaluation.py   # accumulator, mAP, confusion matrix
 │   ├── training/
-│   │   ├── optimizers.py # param groups, SGD/Adam/AdamW, freezing
-│   │   ├── lr_schedulers.py
-│   │   ├── ema.py
-│   │   ├── meters.py     # resumable loss meters
-│   │   ├── checkpoints.py# naming, rotation, RNG capture
-│   │   ├── runs.py       # runs/<name>/train[i] folders
-│   │   └── trainer.py    # the fault-tolerant training loop
-│   ├── logging.py        # loguru setup + torchinfo summary
-│   ├── plotting.py       # history and evaluation figures
-│   ├── onnx_export.py
-│   ├── config.py         # nested dataclass configs + YAML loaders
+│   │   ├── optimizers.py   # param groups, SGD/Adam/AdamW, freezing
+│   │   ├── lr_schedulers.py# cosine / linear with full warmup
+│   │   ├── ema.py          # exponential moving average of weights
+│   │   ├── meters.py       # resumable loss meters
+│   │   ├── checkpoints.py  # naming, rotation, RNG capture
+│   │   ├── runs.py         # runs/<name>/train[i] folders
+│   │   └── trainer.py      # the fault-tolerant training loop
+│   ├── logging.py          # loguru setup + torchinfo summary
+│   ├── plotting.py         # history and evaluation figures
+│   ├── onnx_export.py      # ONNX graph, FP16, simplify, verify
+│   ├── devices.py          # device selection
+│   ├── config.py           # nested dataclass configs + YAML loaders
 │   └── entrypoints/
-│       ├── buildds.py    # build HDF5 datasets
-│       ├── train.py      # train + val + final test
-│       ├── evaluate.py   # full evaluation
-│       ├── exportmodel.py# ONNX export
-│       ├── inference.py  # standalone ONNX inference
-│       └── finetuning.py # build a fine-tunable checkpoint
-├── cpu/configs/          # ready-made configs for CPU
-├── gpu/configs/          # ready-made configs for NVIDIA CUDA / AMD ROCm
-├── tests/                # pytest unit and integration tests
+│       ├── buildds.py      # build HDF5 datasets
+│       ├── train.py        # train + val + final test
+│       ├── evaluate.py     # full evaluation
+│       ├── exportmodel.py  # ONNX export
+│       ├── inference.py    # standalone ONNX inference
+│       └── finetuning.py   # build a fine-tunable checkpoint
+├── cpu/configs/            # ready-made configs for CPU
+├── gpu/configs/            # ready-made configs for NVIDIA CUDA / AMD ROCm
+├── tests/                  # pytest unit and integration tests
 ├── docs/
-│   ├── en_concepts.md    # beginner-friendly concept guide (English)
-│   └── fr_concepts.md    # the same guide in French
-└── src/main.rs           # Rust ONNX inference binary
+│   ├── en_concepts.md      # beginner-friendly concept guide (English)
+│   ├── fr_concepts.md      # the same guide in French
+│   └── metrics/            # LaTeX note on the evaluation metrics
+├── archive/                # first exploratory version, kept as a reference
+├── predict.py              # standalone ONNX inference on one image
+├── live.py                 # standalone ONNX inference on a webcam
+├── yolov8rust/src/main.rs  # Rust ONNX inference binary (image)
+└── yololivers/src/main.rs  # Rust ONNX inference binary (webcam)
 ```
+
+## Model architecture
+
+The whole network is `backbone -> neck -> head`, built by
+[`model.py`](src/yolov8/model.py) from the blocks in
+[`modules/`](src/yolov8/modules/).
+
+### Sizes
+
+One letter picks the size. `scaling.py` turns it into three factors:
+depth `d` (how many bottlenecks per block), width `w` (how many
+channels) and ratio `r` (extra width of the deepest stage).
+
+| Version | d    | w    | r   | Params (nc=80) |
+|---------|------|------|-----|----------------|
+| `n`     | 1/3  | 1/4  | 2.0 | 3.16 M         |
+| `s`     | 1/3  | 1/2  | 2.0 | 11.17 M        |
+| `m`     | 2/3  | 3/4  | 1.5 | 25.90 M        |
+| `l`     | 1.0  | 1.0  | 1.0 | 43.69 M        |
+| `x`     | 1.0  | 1.25 | 1.0 | 68.23 M        |
+
+These counts match the official YOLOv8 models. Run
+`python -m yolov8.model` to check them yourself.
+
+### Backbone
+
+A CSPDarknet: five stride-2 `Conv` blocks (Conv2d + BatchNorm + SiLU)
+that halve the image each time, each followed by a `C2f` block except
+the first one. It returns the three feature maps used for detection,
+at strides 8, 16 and 32 (P3, P4, P5). The last stage ends with an
+`SPPF`: three chained 5x5 max pools concatenated together, a cheap way
+to mix several receptive fields.
+
+`C2f` is the CSP idea: a 1x1 conv, then split the channels in two. The
+first half goes straight to the output, the second half runs through
+the bottleneck chain, and **every intermediate result is kept**. All of
+them are concatenated and mixed by a final 1x1 conv. This gives many
+gradient paths for few FLOPs.
+
+### Neck
+
+A PAN-FPN. First a top-down pass: upsample P5, concatenate with P4,
+`C2f`; upsample that, concatenate with P3, `C2f`. Then a bottom-up
+pass with stride-2 convs going back up and concatenating again. Small
+objects get the semantic context of the deep layers, and big objects
+keep the fine spatial detail.
+
+### Head
+
+Anchor-free and decoupled: at each of the three scales, **two separate
+branches** (each = two 3x3 Conv blocks + one 1x1 Conv2d) predict boxes
+and classes. Splitting them matters because localizing and classifying
+do not want the same features.
+
+The box branch does not regress 4 numbers. It predicts, for each side
+of the box, a **probability distribution over 16 bins** (`reg_max`).
+The `DFL` layer takes the expected value of that distribution with a
+frozen 1x1 conv holding the weights `[0, 1, ..., 15]`. The model can
+therefore say "this edge is probably here, but it is fuzzy", which
+regresses ambiguous edges much better than a single number.
+
+Two details that are easy to get wrong:
+
+- **Branch widths** follow the Ultralytics convention:
+  `box_mid = max(16, ch0/4, 64)` and `cls_mid = max(ch0, min(nc, 100))`.
+  The class branch width must not follow `nc` alone: with 10 classes
+  that would squeeze every classification feature through a 10-channel
+  bottleneck and cap the mAP.
+- **Bias initialization** (`initialize_biases`): the class biases start
+  at `log(5 / nc / (640 / stride)^2)`, a prior for "few objects per
+  cell". Without it every anchor starts at sigmoid = 0.5, the summed
+  BCE explodes and the gradients saturate the clipping for several
+  epochs.
+
+Strides are not hardcoded: the constructor runs a dummy forward pass
+and measures them, then sets the biases (which depend on them).
+
+In `train()` mode the head returns the three raw maps. In `eval()` it
+returns `(decoded, raw)`: the decoded tensor
+`(B, 4 + nc, n_anchors)` in image space for NMS, and the raw maps so
+the validation loss can be computed **without a second forward pass**.
 
 ## Installation
 
@@ -378,6 +491,81 @@ All behavior is controlled through the YAML files in `cpu/configs/` and
 | `validation`   | `interval`, `conf_threshold`, `iou_threshold` |
 
 Unknown keys are reported with a warning and ignored.
+
+## How the training works
+
+### The loss
+
+[`lossfn.py`](src/yolov8/lossfn.py) computes three terms, summed with
+the gains from the `loss:` block (defaults `box_gain: 7.5`,
+`cls_gain: 0.5`, `dfl_gain: 1.5`):
+
+| Term  | What it does |
+|-------|--------------|
+| `box` | **CIoU** between the predicted and the target box. On top of the plain IoU it adds the distance between the centers and a term on the aspect ratio, so a box that does not overlap yet still gets a useful gradient. |
+| `dfl` | **Distribution Focal Loss** on the 16 bins of each box side: it pushes the probability mass onto the two bins around the true distance. |
+| `cls` | **BCE** on the class logits, one independent sigmoid per class. |
+
+### Which anchor learns which object (TAL)
+
+There are no anchor boxes, so something must decide which of the ~8400
+anchor points is responsible for each object. This is the
+**Task-Aligned Assigner** (`Assigner`, `top_k=10`, `alpha=0.5`,
+`beta=6.0`).
+
+For every (anchor, object) pair it computes an alignment score:
+
+```
+score = cls_score^alpha * CIoU^beta
+```
+
+then keeps the `top_k` best anchors per object among those whose
+center falls inside the box. An anchor claimed by several objects is
+given to the one it overlaps best. The assignment therefore
+follows the model as it learns, instead of relying on a fixed IoU
+threshold: an anchor becomes positive because it is *good at both
+tasks at once*, which is what keeps classification and localization
+from drifting apart.
+
+The classification target is not a hard 1: it is the normalized
+alignment score, so a well aligned anchor is asked for a higher
+confidence than a barely aligned one.
+
+### Optimizer and schedule
+
+- **Three parameter groups** (`optimizers.py`): weights with `dim >= 2`
+  get the weight decay, 1-D weights (BatchNorm) and biases get none.
+  Decaying BatchNorm and bias terms hurts for no gain.
+- **Weight decay is scaled** by the effective batch:
+  `wd * (batch_size * grad_accum) / nbs` with `nbs: 64`. The default
+  `0.0005` was tuned for a batch of 64; a batch of 16 would otherwise
+  be over-regularized.
+- **Full warmup** (`lr_schedulers.py`), Ultralytics style: the weight
+  LR rises from 0 to `max_lr`, the bias LR comes **down** from
+  `warmup_bias_lr: 0.1` to `max_lr` (the biases need to move fast at
+  the start), and the momentum rises from `warmup_momentum: 0.8` to
+  `momentum`. The warmup is capped at 30% of the total step budget so
+  a short run keeps a real decay phase, then **cosine** or **linear**
+  decay to `min_lr`.
+- **EMA** (`ema.py`): a smoothed copy of the weights, with a decay that
+  grows as `decay * (1 - exp(-updates / tau))`. Validation and
+  `best.pt` use the EMA weights, which are much more stable than the
+  raw ones.
+- **AMP** on CUDA, but the loss always runs in float32: fp16 targets
+  would quantize the box coordinates.
+- **Gradient accumulation** simulates a large batch, with a flush at
+  the end of the epoch so a partial group is never dropped, and
+  gradient clipping at `grad_clip`.
+- **`close_mosaic`**: mosaic and mixup are turned off for the last N
+  epochs, so the model finishes on real images rather than collages.
+
+### The three passes
+
+Each epoch runs `train`, then `val` every `validation.interval`
+epochs. The validation metrics drive `best.pt` and the early stopping
+(`patience`). When training ends, a **final test** runs on the part of
+the test split that validation never touched (see `val_prob`), so the
+reported numbers are not the ones that selected the model.
 
 ## Fault-tolerant training
 

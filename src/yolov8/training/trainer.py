@@ -93,6 +93,7 @@ class Trainer:
         self.train_meters = LossMeters(device)
         self._eval_resume = None
         self._micro = 0        # micro batches since last optimizer step
+        self._grad_norm = None  # grad norm of the last optimizer step
         self._stop = False
         self._epoch_times = []
         self._mosaic_closed = False
@@ -366,24 +367,32 @@ class Trainer:
         """Optimizer step with grad clipping, AMP and EMA update."""
         grad_clip = self.cfg.optimization.grad_clip
         if self.scaler is not None:
-            if grad_clip and grad_clip > 0:
-                # unscale_ BEFORE clipping, otherwise the clipping
-                # would see gradients multiplied by the scale factor.
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), max_norm=grad_clip)
+            # unscale_ BEFORE measuring, otherwise both the clipping
+            # and the reported norm would see gradients multiplied by
+            # the scale factor.
+            self.scaler.unscale_(self.optimizer)
+            self._grad_norm = self._clip_grads(grad_clip)
             self.scaler.step(self.optimizer)
             self.scaler.update()
         else:
-            if grad_clip and grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), max_norm=grad_clip)
+            self._grad_norm = self._clip_grads(grad_clip)
             self.optimizer.step()
         self.optimizer.zero_grad(set_to_none=True)
         if self.ema is not None:
             self.ema.update(self.model)
         self._micro = 0
         self.opt_step += 1
+
+    def _clip_grads(self, grad_clip):
+        """Clip the gradients and return their norm before clipping.
+
+        When the clipping is off (grad_clip <= 0) an infinite max_norm
+        measures the same norm without touching the gradients.
+        """
+        max_norm = grad_clip if grad_clip and grad_clip > 0 \
+            else float('inf')
+        return torch.nn.utils.clip_grad_norm_(
+            self.model.parameters(), max_norm=max_norm)
 
     def _flush_pending_grads(self):
         """Apply the last incomplete accumulation group of the epoch."""
@@ -414,12 +423,15 @@ class Trainer:
         amp_note = ''
         if self.scaler is not None:
             amp_note = f" | amp_scale: {self.scaler.get_scale():.0f}"
+        # No optimizer step yet when log_interval < grad_accum.
+        grad_norm = 'n/a' if self._grad_norm is None \
+            else f"{float(self._grad_norm):.4f}"
         logger.info(
             f"epoch: {epoch + 1}/{self.cfg.optimization.epochs} | "
             f"step: {step}/{total_steps} | "
             f"avg_loss: {avg['total']:.4f} [box: {avg['box']:.4f}, "
             f"cls: {avg['cls']:.4f}, dfl: {avg['dfl']:.4f}]{amp_note} | "
-            f"lr: {lr_now:.5f}")
+            f"grad_norm: {grad_norm} | lr: {lr_now:.5f}")
 
     # ------------------------------------------------------------------
     # Eval passes (val and test)
