@@ -42,6 +42,19 @@ RESET = "\033[0m"
 ALLOWED_BEST_METRICS = ('map50', 'map', 'precision', 'recall')
 
 
+def format_duration(seconds):
+    """Human readable duration: '8.4s', '13m 52s', '2h 05m 12s'."""
+    seconds = max(float(seconds), 0.0)
+    total = int(round(seconds))
+    if total < 60:
+        return f"{seconds:.1f}s"
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    return f"{minutes}m {secs:02d}s"
+
+
 def empty_history():
     return {
         'epochs_train': [], 'train_loss': [], 'train_box': [],
@@ -322,7 +335,8 @@ class Trainer:
         self.train_meters.reset()
         elapsed = time.time() - t0
         logger.info(
-            f"epoch {epoch + 1} train done in {elapsed:.1f}s | "
+            f"epoch {epoch + 1} train done in "
+            f"{format_duration(elapsed)} | "
             f"box={stats['box']:.4f} cls={stats['cls']:.4f} "
             f"dfl={stats['dfl']:.4f} total={stats['total']:.4f}")
         return stats
@@ -671,8 +685,7 @@ class Trainer:
         postfix = {}
         if self._epoch_times:
             avg = sum(self._epoch_times) / len(self._epoch_times)
-            m, s = divmod(int(avg), 60)
-            postfix['avg_epoch'] = f"{m:02d}:{s:02d}"
+            postfix['avg_epoch'] = format_duration(avg)
         if self.best_metric > -float('inf'):
             metric = self.cfg.checkpoint.best_metric
             postfix[f'best_{metric}'] = f"{self.best_metric:.4f}"

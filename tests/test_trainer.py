@@ -12,6 +12,14 @@ from yolov8.lossfn import ComputeLoss
 from yolov8.model import YOLO
 from yolov8.training import (Trainer, build_optimizer, build_scheduler,
                              prepare_run_dir, CheckpointManager)
+from yolov8.training.trainer import format_duration
+
+
+def test_format_duration():
+    assert format_duration(8.42) == '8.4s'
+    assert format_duration(59.96) == '1m 00s'
+    assert format_duration(832.6) == '13m 53s'
+    assert format_duration(7512) == '2h 05m 12s'
 
 
 def _make_cfg(dataset_paths, epochs=1, ckpt_step=1):
