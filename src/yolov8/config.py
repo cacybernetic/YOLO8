@@ -7,7 +7,8 @@ ignored, so comments and extra fields never break a run.
 
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import (Any, Dict, List, Optional, Union, get_args,
+                    get_origin)
 
 import yaml
 from loguru import logger
@@ -248,8 +249,57 @@ def _from_dict(cls, data, path='config'):
                 kwargs[name] = _from_dict(
                     sub_cls, value, path=f"{path}.{name}")
                 continue
-        kwargs[name] = value
+        kwargs[name] = _coerce_scalar(f.type, value, f"{path}.{name}")
     return cls(**kwargs)
+
+
+_TRUE_WORDS = {'true', 'yes', 'on', '1'}
+_FALSE_WORDS = {'false', 'no', 'off', '0'}
+
+
+def _coerce_scalar(expected, value, path):
+    """Coerce a YAML scalar to the declared field type.
+
+    PyYAML follows YAML 1.1, where `1e-4` (scientific notation without
+    a decimal point) is parsed as a *string*, not a float. Coercing
+    here keeps the YAML forgiving while the dataclasses stay typed.
+    Raises ValueError with the config path when a value cannot be
+    converted.
+    """
+    if get_origin(expected) is Union:  # Optional[X] and friends
+        args = [a for a in get_args(expected) if a is not type(None)]
+        if len(args) == 1:
+            return _coerce_scalar(args[0], value, path)
+        return value
+    if expected not in (float, int, bool, str):
+        return value
+
+    try:
+        if expected is bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                word = value.strip().lower()
+                if word in _TRUE_WORDS:
+                    return True
+                if word in _FALSE_WORDS:
+                    return False
+            raise ValueError(value)
+        if isinstance(value, bool):  # bool is an int: reject for num
+            raise ValueError(value)
+        if expected is float:
+            return float(value)
+        if expected is int:
+            as_float = float(value)
+            if not as_float.is_integer():
+                raise ValueError(value)
+            return int(as_float)
+        # expected is str
+        return value if isinstance(value, str) else str(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Invalid value for {path}: {value!r} "
+            f"(expected {expected.__name__})")
 
 
 def _field_dataclass(cls, name):
