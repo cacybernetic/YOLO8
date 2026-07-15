@@ -437,7 +437,7 @@ class Trainer:
             f"step: {step}/{total_steps} | "
             f"avg_loss: {avg['total']:.4f} [box: {avg['box']:.4f}, "
             f"cls: {avg['cls']:.4f}, dfl: {avg['dfl']:.4f}]{amp_note} | "
-            f"grad_norm: {grad_norm} | lr: {lr_now:.5f}")
+            f"grad_norm: {grad_norm} | lr: {lr_now:.2e}")
 
     # ------------------------------------------------------------------
     # Eval passes (val and test)
