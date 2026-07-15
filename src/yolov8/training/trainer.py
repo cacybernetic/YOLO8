@@ -16,6 +16,7 @@ of any pass without seeing a sample twice in the same epoch.
 
 import math
 import time
+from copy import deepcopy
 from pathlib import Path
 
 import pandas as pd
@@ -266,7 +267,8 @@ class Trainer:
         self.phase = 'test'
         logger.info("===== Final evaluation on the held-out test set "
                     "=====")
-        results = self._eval_pass(self.test_loader, 'test')
+        results = self._eval_pass(self.test_loader, 'test',
+                                  model=self._best_weights_model())
         self._log_metrics_table("Final test metrics", {}, results,
                                 right_name='test')
         self._write_test_results(results)
@@ -352,7 +354,11 @@ class Trainer:
         # `* bs`: the loss is normalized per target; the reference
         # YOLOv8 recipe backpropagates loss.sum() * batch_size and the
         # default hyperparameters are tuned for that gradient scale.
-        scaled = loss * bs / accum
+        # No `/ accum` here: summing `loss * bs` over the micro batches
+        # yields the gradient of the EFFECTIVE batch (bs * accum) — the
+        # same scale the weight decay is adjusted for (nbs). Dividing
+        # by accum would shrink every step by that factor.
+        scaled = loss * bs
         if self.scaler is not None:
             self.scaler.scale(scaled).backward()
         else:
@@ -437,10 +443,37 @@ class Trainer:
     # Eval passes (val and test)
     # ------------------------------------------------------------------
 
+    def _best_weights_model(self):
+        """Model carrying the best.pt weights, for the final test.
+
+        The final reported metrics must describe the weights the run
+        ships (best.pt): with early stopping or late overfitting they
+        can differ a lot from the last-epoch weights. Falls back on
+        the current (EMA) weights when best.pt was never written.
+        """
+        path = self.run_dir / 'weights' / 'best.pt'
+        base = self.ema.ema if self.ema is not None else self.model
+        if not path.exists():
+            logger.warning("best.pt not found: the final test runs on "
+                           "the current weights.")
+            return base
+        payload = safe_torch_load(path, map_location=self.device)
+        model = deepcopy(base)
+        model.load_state_dict(payload['model'])
+        for p in model.parameters():
+            p.requires_grad_(False)
+        logger.info(
+            f"Final test on best.pt (epoch "
+            f"{int(payload.get('epoch', -1)) + 1}, "
+            f"{self.cfg.checkpoint.best_metric}="
+            f"{float(payload.get('best_metric', 0.0)):.4f})")
+        return model
+
     @torch.no_grad()
-    def _eval_pass(self, loader, phase):
+    def _eval_pass(self, loader, phase, model=None):
         """Run one evaluation pass, resumable batch by batch."""
-        model = self.ema.ema if self.ema is not None else self.model
+        if model is None:
+            model = self.ema.ema if self.ema is not None else self.model
         model.eval()
         meters = LossMeters(self.device)
         accumulator = MetricAccumulator(self.device)

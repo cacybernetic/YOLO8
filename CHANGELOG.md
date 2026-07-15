@@ -94,6 +94,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Gradient accumulation: the loss is no longer divided by `grad_accum`.
+  Summing `loss * batch_size` over the micro batches now yields the
+  gradient of the effective batch (`batch_size * grad_accum`) — the
+  same scale the weight decay is adjusted for (`nbs`). Previously any
+  `grad_accum > 1` silently shrank every optimizer step by that factor.
+- The final test evaluates the `best.pt` weights (the ones the run
+  ships) instead of the last-epoch EMA weights, which can be much
+  worse after early stopping or late overfitting. Falls back on the
+  current weights when best.pt was never written.
+- `input_size` values that are not a multiple of 32 are rejected at
+  model construction: the backbone downsamples by 32, so any other
+  size produced non-integer strides and silently misplaced training
+  targets.
+- The classification bias prior uses the real `input_size` instead of
+  a hardcoded 640, so training at other resolutions starts from the
+  intended per-cell object prior.
 - Scheduler: `warmup_epochs: 0` is respected, and the warmup is capped
   to 30% of the total step budget so short runs keep a real decay
   phase (previously a 100-step floor could consume nearly the whole

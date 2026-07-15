@@ -60,7 +60,7 @@ class Head(nn.Module):
             nn.Conv2d(mid_channels, out_channels, kernel_size=1, stride=1),
         )
 
-    def initialize_biases(self):
+    def initialize_biases(self, input_size=640):
         """Set good starting biases for the last box and class convolutions.
 
         Without this step, the class logits start around sigmoid = 0.5 for
@@ -68,8 +68,9 @@ class Head(nn.Module):
         at the start and gradients saturate the clipping for several epochs.
         Convention (standard YOLOv8 prior initialization):
           - box branch: bias set to 1.0
-          - cls branch: bias set to log(5 / nc / (640 / stride)^2), a small
-            prior that matches the expected number of objects per cell.
+          - cls branch: bias set to log(5 / nc / (input_size / stride)^2):
+            about 5 objects per image, spread over nc classes and the
+            (input_size / stride)^2 cells of the scale.
 
         Must be called AFTER the strides are set.
         """
@@ -82,7 +83,7 @@ class Head(nn.Module):
                     self.box, self.cls, self.stride):
                 box_branch[-1].bias.fill_(1.0)
                 cls_branch[-1].bias.fill_(
-                    math.log(5 / self.nc / (640 / float(s)) ** 2))
+                    math.log(5 / self.nc / (input_size / float(s)) ** 2))
 
     def forward(self, x):
         # x = [out_1, out_2, out_3]. A mutable list is required.

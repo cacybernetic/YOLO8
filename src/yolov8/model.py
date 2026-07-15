@@ -15,6 +15,13 @@ class YOLO(nn.Module):
 
     def __init__(self, version='n', num_classes=80, input_size=640):
         super().__init__()
+        # The backbone downsamples by 32: any other size produces
+        # non-integer strides and silently misplaced training targets.
+        if input_size % 32 != 0:
+            raise ValueError(
+                f"input_size must be a multiple of 32, got "
+                f"{input_size}. Use e.g. "
+                f"{max(32, round(input_size / 32) * 32)}.")
         self.version = version
         self.num_classes = num_classes
         self.backbone = Backbone(version=version)
@@ -22,7 +29,7 @@ class YOLO(nn.Module):
         self.head = Head(version=version, num_classes=num_classes)
 
         self._initialize_strides(input_size=input_size)
-        self.head.initialize_biases()
+        self.head.initialize_biases(input_size=input_size)
 
     def _initialize_strides(self, input_size):
         """Run a dummy forward pass to measure the stride of each scale."""

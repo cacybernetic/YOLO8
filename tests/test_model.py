@@ -16,6 +16,14 @@ def test_yolo_params_known_versions():
         yolo_params('z')
 
 
+def test_input_size_must_be_multiple_of_32():
+    """A size the backbone cannot halve five times must fail fast:
+    accepted, it would give non-integer strides and silently
+    misplaced training targets."""
+    with pytest.raises(ValueError, match='multiple of 32'):
+        YOLO(version='n', num_classes=3, input_size=100)
+
+
 def test_strides_are_calibrated():
     model = YOLO(version='n', num_classes=3, input_size=128)
     assert model.head.stride.tolist() == [8.0, 16.0, 32.0]

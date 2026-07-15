@@ -118,6 +118,59 @@ def test_unknown_best_metric_fails_fast(tiny_dataset, tmp_path):
         _make_trainer(cfg, run_dir)
 
 
+def test_grad_accum_scales_with_effective_batch(tiny_dataset, tmp_path):
+    """Accumulating N micro batches must produce the gradient of the
+    effective batch (bs * N), not the mean micro-batch gradient —
+    otherwise grad_accum > 1 silently shrinks every step by N."""
+    cfg = _make_cfg(tiny_dataset, epochs=1)
+    run_dir, _ = prepare_run_dir(tmp_path / 'runs', 'demo', 'train')
+
+    torch.manual_seed(0)
+    t1 = _make_trainer(cfg, run_dir)
+    t2 = _make_trainer(cfg, run_dir)
+    t2.model.load_state_dict(t1.model.state_dict())
+
+    images, targets, _ = next(iter(t1.train_loader))
+
+    # One micro batch, no optimizer step yet (accum not reached).
+    t1._train_step(images, targets, accum=2)
+    g1 = torch.cat([p.grad.flatten() for p in t1.model.parameters()
+                    if p.grad is not None])
+
+    # The same micro batch accumulated twice.
+    t2._train_step(images, targets, accum=3)
+    t2._train_step(images, targets, accum=3)
+    g2 = torch.cat([p.grad.flatten() for p in t2.model.parameters()
+                    if p.grad is not None])
+
+    assert torch.allclose(g2, 2 * g1, rtol=1e-5, atol=1e-7)
+
+
+def test_final_test_runs_on_best_weights(tiny_dataset, tmp_path):
+    """The final test must evaluate best.pt, not the last weights."""
+    cfg = _make_cfg(tiny_dataset, epochs=1)
+    run_dir, _ = prepare_run_dir(tmp_path / 'runs', 'demo', 'train')
+    trainer = _make_trainer(cfg, run_dir)
+
+    trainer.best_metric = 0.5
+    trainer._save_best()
+    # Move the live weights away from the saved best.pt.
+    with torch.no_grad():
+        for p in trainer.model.parameters():
+            p.add_(1.0)
+
+    model = trainer._best_weights_model()
+    saved = torch.load(run_dir / 'weights' / 'best.pt',
+                       map_location='cpu', weights_only=True)
+    live = model.state_dict()
+    for key, value in saved['model'].items():
+        assert torch.equal(live[key], value)
+    # The training model itself is left untouched.
+    assert not torch.equal(
+        next(iter(model.parameters())),
+        next(iter(trainer.model.parameters())))
+
+
 def test_best_and_last_weights_load_back(tiny_dataset, tmp_path):
     cfg = _make_cfg(tiny_dataset, epochs=1)
     run_dir, _ = prepare_run_dir(tmp_path / 'runs', 'demo', 'train')
