@@ -267,10 +267,16 @@ class Augmenter:
     def __call__(self, img, labels, sample_loader, mosaic_used=False):
         """Run the pipeline on an image and its labels.
 
+        Pipeline order (YOLOv8 convention): geometry (which also crops
+        a mosaic canvas back to s x s), MixUp, HSV jitter, flips, then
+        pixel-level effects. HSV runs after the geometry so it touches
+        the final s x s crop instead of the 4x larger mosaic canvas.
+
         Args:
             img, labels: current sample (letterboxed or mosaic canvas).
-            sample_loader: callable returning another random letterboxed
-                (img, labels) pair, used by MixUp. May return None.
+            sample_loader: callable returning another random (img,
+                labels) pair already passed through the geometry step,
+                used by MixUp. May return None.
             mosaic_used: True when `img` is a 2s x 2s mosaic canvas that
                 the affine step must crop back to s x s.
         """
@@ -278,10 +284,10 @@ class Augmenter:
         if not p['enabled']:
             return img, labels
 
-        img = self._color_jitter(img)
-        img, labels = self._geometry(img, labels, mosaic_used)
-        img, labels = self._flips(img, labels)
+        img, labels = self.geometry(img, labels, mosaic_used)
         img, labels = self._mixup(img, labels, sample_loader)
+        img = self._color_jitter(img)
+        img, labels = self._flips(img, labels)
         img, labels = self._pixel_effects(img, labels)
         return img, labels
 
@@ -292,9 +298,10 @@ class Augmenter:
                               s_gain=p['hsv_s'], v_gain=p['hsv_v'])
         return img
 
-    def _geometry(self, img, labels, mosaic_used):
+    def geometry(self, img, labels, mosaic_used=False):
         # Always applied after a mosaic: this step crops the 2s x 2s
         # canvas back to s x s, even with all geometric values at 0.
+        # Public: the dataset also uses it to prepare MixUp partners.
         p = self.params
         needed = (p['degrees'] > 0 or p['translate'] > 0 or
                   p['scale'] > 0 or p['shear'] > 0 or
@@ -317,13 +324,14 @@ class Augmenter:
         return img, labels
 
     def _mixup(self, img, labels, sample_loader):
+        # The partner comes from the dataset already passed through the
+        # same mosaic + geometry treatment; the flips applied after
+        # MixUp cover both images at once (YOLOv8 pipeline order).
         p = self.params
         if p['mixup'] > 0 and random.random() < p['mixup']:
             other = sample_loader()
             if other is not None:
                 img2, labels2 = other
-                if p['flip_lr'] > 0 and random.random() < p['flip_lr']:
-                    img2, labels2 = horizontal_flip(img2, labels2)
                 img, labels = mixup(img, labels, img2, labels2)
         return img, labels
 

@@ -77,3 +77,27 @@ def test_state_dict_contains_buffers():
     adapter = DataLoaderAdapter(IndexDataset(4), batch_size=2)
     state = adapter.state_dict()
     assert set(state) == {'_epoch', '_position', '_seed'}
+
+
+def test_load_state_dict_accepts_old_tensor_format():
+    """Checkpoints from the nn.Module-based adapter stored 0-d tensors."""
+    adapter = DataLoaderAdapter(IndexDataset(6), batch_size=2)
+    adapter.load_state_dict({
+        '_epoch': torch.tensor(3), '_position': torch.tensor(1),
+        '_seed': torch.tensor(42)})
+    assert adapter.epoch == 3
+    assert adapter.position == 1
+
+
+def test_persistent_workers_cover_every_epoch():
+    adapter = DataLoaderAdapter(IndexDataset(10), batch_size=3,
+                                shuffle=True, num_workers=2, seed=0,
+                                persistent=True)
+    for _ in range(2):
+        seen = collect(iter(adapter))
+        assert sorted(seen) == list(range(10))
+    assert adapter._dl is not None      # loader kept alive
+    adapter.invalidate_workers()
+    assert adapter._dl is None
+    seen = collect(iter(adapter))       # still works after restart
+    assert sorted(seen) == list(range(10))

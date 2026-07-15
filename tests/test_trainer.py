@@ -37,14 +37,15 @@ def _make_trainer(cfg, run_dir):
     device = torch.device('cpu')
     train_ds = build_train_dataset(cfg.dataset)
     test_ds = build_test_dataset(cfg.dataset)
-    val_ds = split_val_from_test(test_ds, cfg.dataset.val_prob)
+    val_ds, final_test_ds = split_val_from_test(
+        test_ds, cfg.dataset.val_prob)
 
     kwargs = dict(batch_size=cfg.optimization.batch_size,
                   num_workers=0, collate_fn=collate_detection_batch)
     train_loader = DataLoaderAdapter(train_ds, shuffle=True,
                                      drop_last=True, **kwargs)
     val_loader = DataLoaderAdapter(val_ds, **kwargs)
-    test_loader = DataLoaderAdapter(test_ds, **kwargs)
+    test_loader = DataLoaderAdapter(final_test_ds, **kwargs)
 
     model = MyYolo(version='n', num_classes=2, input_size=64)
     loss_fn = ComputeLoss(model, cfg.loss.gains())
@@ -103,6 +104,18 @@ def test_mid_epoch_checkpoint_and_resume(tiny_dataset, tmp_path):
     # The resumed epoch is complete: exactly one history row.
     df = pd.read_csv(run_dir / 'history.csv')
     assert list(df['epoch']) == [1]
+
+
+def test_unknown_best_metric_fails_fast(tiny_dataset, tmp_path):
+    """A typo in checkpoint.best_metric must abort at startup, not
+    silently skip best.pt for the whole run."""
+    import pytest
+
+    cfg = _make_cfg(tiny_dataset, epochs=1)
+    cfg.checkpoint.best_metric = 'mpa50'  # typo
+    run_dir, _ = prepare_run_dir(tmp_path / 'runs', 'demo', 'train')
+    with pytest.raises(ValueError, match='best_metric'):
+        _make_trainer(cfg, run_dir)
 
 
 def test_best_and_last_weights_load_back(tiny_dataset, tmp_path):

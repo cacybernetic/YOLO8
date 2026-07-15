@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 from torch.nn.functional import cross_entropy
 
+from yolov8.modules.anchors import make_anchors  # noqa: F401 (re-export)
+
 
 # ---------------------------------------------------------------------------
 # IoU / CIoU
@@ -33,26 +35,6 @@ def compute_iou(box1, box2, eps=1e-7):
     with torch.no_grad():
         alpha = v / (v - iou + (1 + eps))
     return iou - (rho2 / c2 + v * alpha)
-
-
-# ---------------------------------------------------------------------------
-# Anchors
-# ---------------------------------------------------------------------------
-
-def make_anchors(x, strides, offset=0.5):
-    """Build anchor center points and per-anchor stride values."""
-    assert x is not None
-    anchor_tensor, stride_tensor = [], []
-    dtype, device = x[0].dtype, x[0].device
-    for i, stride in enumerate(strides):
-        _, _, h, w = x[i].shape
-        sx = torch.arange(end=w, device=device, dtype=dtype) + offset
-        sy = torch.arange(end=h, device=device, dtype=dtype) + offset
-        sy, sx = torch.meshgrid(sy, sx, indexing='ij')
-        anchor_tensor.append(torch.stack((sx, sy), -1).view(-1, 2))
-        stride_tensor.append(torch.full(
-            (h * w, 1), float(stride), dtype=dtype, device=device))
-    return torch.cat(anchor_tensor), torch.cat(stride_tensor)
 
 
 # ---------------------------------------------------------------------------
@@ -90,9 +72,10 @@ class Assigner(nn.Module):
         device = pd_bboxes.device
 
         if num_max_boxes == 0:
-            return (torch.zeros_like(pd_bboxes, device=device),
-                    torch.zeros_like(pd_scores, device=device),
-                    torch.zeros_like(pd_scores[..., 0], device=device))
+            return (torch.zeros_like(pd_bboxes),
+                    torch.zeros_like(pd_scores),
+                    torch.zeros(pd_scores.shape[:2], dtype=torch.bool,
+                                device=device))
 
         num_anchors = anc_points.shape[0]
         shape = gt_bboxes.shape
@@ -251,6 +234,9 @@ class ComputeLoss:
 
         self.params = params
         self.stride = m.stride.to(device)
+        # Scalar stride of the first scale, cached once so the target
+        # packing never has to touch a GPU tensor.
+        self.stride0 = float(m.stride[0])
         self.nc = m.nc
         self.no = m.no
         self.reg_max = m.ch
@@ -271,40 +257,63 @@ class ComputeLoss:
         x2y2 = anchor_points + rb
         return torch.cat(tensors=(x1y1, x2y2), dim=-1)
 
-    def _build_gt(self, targets, batch_size, input_size, data_type):
-        """Pack the flat target dict into a (b, max_obj, 5) tensor."""
-        idx = targets['idx'].view(-1, 1).to(self.device)
-        cls = targets['cls'].view(-1, 1).to(self.device)
-        box = targets['box'].to(self.device)  # (N, 4) normalized cx cy w h
-        targets_cat = torch.cat((idx, cls, box), dim=1)
+    def _build_gt(self, targets, batch_size, image_wh):
+        """Pack the flat target dict into a (b, max_obj, 5) fp32 tensor.
 
-        if targets_cat.shape[0] == 0:
-            return torch.zeros(batch_size, 0, 5,
-                               device=self.device, dtype=data_type)
+        The packing runs on the device the targets already live on
+        (usually the CPU, straight from the collate function) with pure
+        tensor ops — no per-image Python loop, no GPU synchronization.
+        The result is moved to the compute device in one transfer.
 
-        i = targets_cat[:, 0]
-        _, counts = i.unique(return_counts=True)
-        counts = counts.to(dtype=torch.int32)
-        gt = torch.zeros(batch_size, int(counts.max()), 5,
-                         device=self.device, dtype=data_type)
-        for j in range(batch_size):
-            matches = (i == j)
-            n = matches.sum()
-            if n:
-                gt[j, :n] = targets_cat[matches, 1:].to(data_type)
+        Args:
+            targets: {'idx': (N,), 'cls': (N,), 'box': (N, 4)} with
+                boxes as normalized (cx, cy, w, h).
+            batch_size: number of images in the batch.
+            image_wh: (width, height) of the network input in pixels.
+        """
+        idx = targets['idx'].view(-1).long()
+        cls = targets['cls'].view(-1, 1).float()
+        box = targets['box'].float()  # (N, 4) normalized cx cy w h
+
+        if idx.numel() == 0:
+            return torch.zeros(batch_size, 0, 5, device=self.device,
+                               dtype=torch.float32)
+
+        if int(cls.max()) >= self.nc:
+            raise ValueError(
+                f"Target class id {int(cls.max())} is out of range for "
+                f"a {self.nc}-class model. Check the dataset labels "
+                f"and data.yaml.")
+
+        pack_device = idx.device
+        rows = torch.cat((cls, box), dim=1)          # (N, 5)
+        counts = torch.bincount(idx, minlength=batch_size)
+        max_n = int(counts.max())
+
+        # Row -> (image, slot) destination, computed without a loop:
+        # after a stable sort by image index, the slot of a row is its
+        # rank minus the offset of its image.
+        order = torch.argsort(idx, stable=True)
+        idx_sorted = idx[order]
+        offsets = torch.zeros(batch_size, dtype=torch.long,
+                              device=pack_device)
+        offsets[1:] = counts.cumsum(0)[:-1]
+        slots = torch.arange(idx.numel(), device=pack_device) \
+            - offsets[idx_sorted]
+
+        gt = torch.zeros(batch_size, max_n, 5, dtype=torch.float32,
+                         device=pack_device)
+        gt[idx_sorted, slots] = rows[order]
 
         # Normalized cx cy w h -> xyxy in image space.
-        xywh = gt[..., 1:5].clone()
-        xywh.mul_(input_size[[1, 0, 1, 0]])  # multiply by (W, H, W, H)
-        y = torch.empty_like(xywh)
-        dw = xywh[..., 2] / 2
-        dh = xywh[..., 3] / 2
-        y[..., 0] = xywh[..., 0] - dw
-        y[..., 1] = xywh[..., 1] - dh
-        y[..., 2] = xywh[..., 0] + dw
-        y[..., 3] = xywh[..., 1] + dh
-        gt[..., 1:5] = y
-        return gt
+        w, h = image_wh
+        scale = torch.tensor([w, h, w, h], dtype=torch.float32,
+                             device=pack_device)
+        xywh = gt[..., 1:5] * scale
+        half = xywh[..., 2:4] / 2
+        gt[..., 1:3] = xywh[..., 0:2] - half
+        gt[..., 3:5] = xywh[..., 0:2] + half
+        return gt.to(self.device, non_blocking=True)
 
     def __call__(self, outputs, targets):
         """
@@ -322,19 +331,23 @@ class ComputeLoss:
             dim=2)
         pred_distri, pred_scores = x.split(
             split_size=(self.reg_max * 4, self.nc), dim=1)
-        pred_scores = pred_scores.permute(0, 2, 1).contiguous()
-        pred_distri = pred_distri.permute(0, 2, 1).contiguous()
+        # The loss runs in float32 even under autocast: fp16 would
+        # quantize image-space coordinates (0.5 px steps above 512) and
+        # degrade the CIoU / DFL numerics. Autograd casts the gradients
+        # back to the model dtype automatically.
+        pred_scores = pred_scores.permute(0, 2, 1).contiguous().float()
+        pred_distri = pred_distri.permute(0, 2, 1).contiguous().float()
 
-        data_type = pred_scores.dtype
         batch_size = pred_scores.shape[0]
-        input_size = torch.tensor(
-            outputs[0].shape[2:], device=self.device,
-            dtype=data_type) * self.stride[0]
+        feat_h, feat_w = outputs[0].shape[2:]
+        image_wh = (feat_w * self.stride0, feat_h * self.stride0)
 
         anchor_points, stride_tensor = make_anchors(
             outputs, self.stride, offset=0.5)
+        anchor_points = anchor_points.float()
+        stride_tensor = stride_tensor.float()
 
-        gt = self._build_gt(targets, batch_size, input_size, data_type)
+        gt = self._build_gt(targets, batch_size, image_wh)
         gt_labels, gt_bboxes = gt.split((1, 4), 2)
         mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
 
@@ -353,17 +366,16 @@ class ComputeLoss:
 
         # Classification loss (BCE).
         loss_cls = self.cls_loss(
-            pred_scores, target_scores.to(data_type)).sum() \
+            pred_scores, target_scores.to(pred_scores.dtype)).sum() \
             / target_scores_sum
 
-        # Box + DFL loss (0-d scalars for a uniform aggregation).
-        loss_box = torch.zeros((), device=self.device)
-        loss_dfl = torch.zeros((), device=self.device)
-        if fg_mask.sum():
-            target_bboxes = target_bboxes / stride_tensor
-            loss_box, loss_dfl = self.box_loss(
-                pred_distri, pred_bboxes, anchor_points,
-                target_bboxes, target_scores, target_scores_sum, fg_mask)
+        # Box + DFL loss. Computed unconditionally: with an empty
+        # foreground mask every masked select is empty and both sums
+        # are zero, so no `fg_mask.sum()` GPU sync is needed per step.
+        target_bboxes = target_bboxes / stride_tensor
+        loss_box, loss_dfl = self.box_loss(
+            pred_distri, pred_bboxes, anchor_points,
+            target_bboxes, target_scores, target_scores_sum, fg_mask)
 
         loss_box = loss_box * self.params['box']
         loss_cls = loss_cls * self.params['cls']

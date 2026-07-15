@@ -40,7 +40,7 @@ def test_eval_output_shapes():
     assert inference.shape == (1, 4 + 3, n_anchors)
     assert len(raw) == 3
     # Class scores are sigmoid outputs, inside [0, 1].
-    scores = inference[:, 4:, :]
+    scores = inference[:, 4:, :].detach()
     assert float(scores.min()) >= 0.0
     assert float(scores.max()) <= 1.0
 
@@ -48,8 +48,26 @@ def test_eval_output_shapes():
 def test_parameter_count_nano():
     model = MyYolo(version='n', num_classes=80)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    # YOLOv8n has close to 3 million parameters.
-    assert 2.5 < n_params < 4.0
+    # YOLOv8n (80 classes) has 3.157 million parameters.
+    assert abs(n_params - 3.157) < 0.01
+
+
+def test_parameter_count_small():
+    model = MyYolo(version='s', num_classes=80)
+    n_params = sum(p.numel() for p in model.parameters()) / 1e6
+    # YOLOv8s (80 classes) has 11.166 million parameters.
+    assert abs(n_params - 11.166) < 0.01
+
+
+def test_cls_head_width_not_capped_by_small_class_count():
+    """The cls branch must keep a wide intermediate width even with a
+    tiny class count (a 1-channel bottleneck would cap the mAP)."""
+    for nc in (1, 2, 10):
+        model = MyYolo(version='n', num_classes=nc)
+        branch = model.head.cls[0]
+        assert branch[0].conv.out_channels >= 64
+        assert branch[1].conv.out_channels >= 64
+        assert branch[2].out_channels == nc
 
 
 def test_forward_speed_cpu():

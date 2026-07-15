@@ -16,16 +16,29 @@ class BaseLR:
         biases can move fast early without hurting the weights;
       - the momentum goes up from warmup_momentum (0.8) to momentum.
 
-    Small dataset guard: the warmup is capped so it never consumes the
-    whole step budget.
+    Warmup budget rules:
+      - `warmup_epochs: 0` really disables the warmup;
+      - when warmup is requested, at least 100 steps are used for
+        stability (Ultralytics floor);
+      - the warmup never consumes more than 30% of the total step
+        budget, so short trainings on small datasets keep a real
+        decay phase instead of spending every step ramping up.
     """
+
+    WARMUP_FLOOR_STEPS = 100
+    WARMUP_MAX_FRACTION = 0.3
 
     def __init__(self, max_lr, min_lr, warmup_epochs, total_epochs,
                  num_steps, momentum=0.937, warmup_momentum=0.8,
                  warmup_bias_lr=0.1):
         total_steps = max(int(round(total_epochs * num_steps)), 1)
-        warmup_steps = int(max(warmup_epochs * num_steps, 100))
-        self.warmup_steps = max(min(warmup_steps, total_steps - 1), 0)
+        warmup_steps = int(round(warmup_epochs * num_steps))
+        if warmup_steps > 0:
+            warmup_steps = max(warmup_steps, self.WARMUP_FLOOR_STEPS)
+        warmup_steps = min(warmup_steps,
+                           int(self.WARMUP_MAX_FRACTION * total_steps),
+                           total_steps - 1)
+        self.warmup_steps = max(warmup_steps, 0)
         self.decay_steps = max(total_steps - self.warmup_steps, 1)
         self.max_lr = max_lr
         self.min_lr = min_lr

@@ -45,12 +45,13 @@ class C2f(nn.Module):
                           out_channels, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x):
+        # Canonical YOLOv8 ordering: [x1, x2, m1(x2), m2(m1(x2)), ...].
+        # The bottleneck chain runs on the SECOND chunk and new outputs
+        # are appended, matching the official C2f weight layout.
         x = self.conv1(x)
         x1 = x[:, :x.shape[1] // 2, :, :]
         x2 = x[:, x.shape[1] // 2:, :, :]
         outputs = [x1, x2]
         for i in range(self.num_bottlenecks):
-            x1 = self.m[i](x1)
-            outputs.insert(0, x1)
-        outputs = torch.cat(outputs, dim=1)
-        return self.conv2(outputs)
+            outputs.append(self.m[i](outputs[-1]))
+        return self.conv2(torch.cat(outputs, dim=1))

@@ -3,7 +3,8 @@
 The Trainer runs three passes:
   - train: one epoch over the train loader;
   - val: per-epoch validation on a fraction of the test set;
-  - test: final evaluation on the full test set after the last epoch.
+  - test: final evaluation, after the last epoch, on the held-out
+    part of the test split (disjoint from the validation part).
 
 A checkpoint is written every `ckpt_step` optimizer steps (train) or
 batches (val / test), plus at every phase boundary. Each checkpoint
@@ -36,6 +37,9 @@ BAR_CHARS = "░█"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
+# Metrics accepted by checkpoint.best_metric (all maximized).
+ALLOWED_BEST_METRICS = ('map50', 'map', 'precision', 'recall')
+
 
 def empty_history():
     return {
@@ -67,6 +71,14 @@ class Trainer:
         self.ema = ema
         self.scaler = scaler
         self.raw_config = raw_config or {}
+
+        # Fail fast on a config typo: a silent warning at every epoch
+        # would mean best.pt is never written.
+        if cfg.checkpoint.best_metric not in ALLOWED_BEST_METRICS:
+            raise ValueError(
+                f"Unknown checkpoint.best_metric "
+                f"'{cfg.checkpoint.best_metric}'. "
+                f"Choose one of {ALLOWED_BEST_METRICS}.")
 
         self.ckpts = CheckpointManager(
             self.run_dir / 'checkpoints',
@@ -251,7 +263,8 @@ class Trainer:
         if self.phase == 'done':
             return {}
         self.phase = 'test'
-        logger.info("===== Final evaluation on the full test set =====")
+        logger.info("===== Final evaluation on the held-out test set "
+                    "=====")
         results = self._eval_pass(self.test_loader, 'test')
         self._log_metrics_table("Final test metrics", {}, results,
                                 right_name='test')
@@ -302,6 +315,7 @@ class Trainer:
         step_bar.close()
 
         stats = self.train_meters.averages()
+        self._ensure_finite(stats['total'], f"epoch {epoch + 1}")
         self.train_meters.reset()
         elapsed = time.time() - t0
         logger.success(
@@ -309,6 +323,20 @@ class Trainer:
             f"box={stats['box']:.4f} cls={stats['cls']:.4f} "
             f"dfl={stats['dfl']:.4f} total={stats['total']:.4f}")
         return stats
+
+    @staticmethod
+    def _ensure_finite(value, context):
+        """Abort with a clear error when the loss went NaN/inf.
+
+        Without this check a divergence under AMP only shows up as the
+        GradScaler silently skipping every step: the run keeps going
+        but the model stops learning.
+        """
+        if not math.isfinite(value):
+            raise RuntimeError(
+                f"Non-finite training loss ({value}) at {context}. "
+                f"The run diverged: lower the learning rate, check the "
+                f"dataset, or disable AMP to locate the source.")
 
     def _train_step(self, images, targets, accum):
         """One micro batch: forward, loss, backward, optional step."""
@@ -364,6 +392,9 @@ class Trainer:
 
     def _log_train_step(self, step, total_steps, epoch, step_bar):
         avg = self.train_meters.averages()
+        self._ensure_finite(
+            avg['total'],
+            f"epoch {epoch + 1}, step {step}/{total_steps}")
         lr_now = self.optimizer.param_groups[0]['lr']
         step_bar.set_postfix({
             'loss': f"{avg['total']:.4f}",
@@ -371,11 +402,14 @@ class Trainer:
             'cls': f"{avg['cls']:.4f}",
             'dfl': f"{avg['dfl']:.4f}",
         })
+        amp_note = ''
+        if self.scaler is not None:
+            amp_note = f" | amp_scale {self.scaler.get_scale():.0f}"
         logger.info(
             f"epoch {epoch + 1}/{self.cfg.optimization.epochs} | "
             f"step {step}/{total_steps} | lr {lr_now:.5f} | "
             f"avg_loss {avg['total']:.4f} (box {avg['box']:.4f} "
-            f"cls {avg['cls']:.4f} dfl {avg['dfl']:.4f})")
+            f"cls {avg['cls']:.4f} dfl {avg['dfl']:.4f}){amp_note}")
 
     # ------------------------------------------------------------------
     # Eval passes (val and test)
@@ -427,11 +461,17 @@ class Trainer:
 
     def _eval_batch(self, model, images, targets, meters, accumulator):
         images = images.to(self.device, non_blocking=True)
-        out = model(images)
+        # Same mixed precision as training: halves the eval time on
+        # GPU. The loss itself recomputes in fp32 internally, and the
+        # decoded predictions are cast back before NMS and matching.
+        with torch.autocast(device_type=self.device.type,
+                            enabled=self._amp_enabled):
+            out = model(images)
         if isinstance(out, tuple):
             inference_out, raw_outputs = out
         else:
             inference_out, raw_outputs = out, None
+        inference_out = inference_out.float()
 
         if raw_outputs is not None:
             lb, lc, ld = self.loss_fn(raw_outputs, targets)
@@ -597,6 +637,12 @@ class Trainer:
                         f"the last {total - epoch} epochs")
             augmenter.params['mosaic'] = 0.0
             augmenter.params['mixup'] = 0.0
+            # Persistent DataLoader workers hold their own dataset
+            # copy: they must be restarted to see the new params.
+            invalidate = getattr(self.train_loader,
+                                 'invalidate_workers', None)
+            if invalidate is not None:
+                invalidate()
         self._mosaic_closed = True
 
     def _log_run_summary(self):

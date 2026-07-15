@@ -8,6 +8,7 @@ import torch.nn as nn
 from .scaling import yolo_params
 from .conv import Conv
 from .dfl import DFL
+from .anchors import make_anchors
 
 
 class Head(nn.Module):
@@ -32,23 +33,31 @@ class Head(nn.Module):
         d, w, r = yolo_params(version=version)
         in_channels = [int(256 * w), int(512 * w), int(512 * w * r)]
 
+        # Intermediate widths (Ultralytics Detect convention). The class
+        # branch width must NOT depend on the class count alone: with a
+        # small nc (1-10 classes) that would squeeze all classification
+        # features through a 1-10 channel bottleneck and cap the mAP.
+        box_mid = max(16, in_channels[0] // 4, self.coordinates)
+        cls_mid = max(in_channels[0], min(self.nc, 100))
+
         self.box = nn.ModuleList([
-            self._branch(c, self.coordinates) for c in in_channels
+            self._branch(c, box_mid, self.coordinates)
+            for c in in_channels
         ])
         self.cls = nn.ModuleList([
-            self._branch(c, self.nc) for c in in_channels
+            self._branch(c, cls_mid, self.nc) for c in in_channels
         ])
         self.dfl = DFL(ch=self.ch)
 
     @staticmethod
-    def _branch(in_channels, out_channels):
+    def _branch(in_channels, mid_channels, out_channels):
         """Build one prediction branch: two Conv blocks + a 1x1 Conv2d."""
         return nn.Sequential(
-            Conv(in_channels, out_channels,
+            Conv(in_channels, mid_channels,
                  kernel_size=3, stride=1, padding=1),
-            Conv(out_channels, out_channels,
+            Conv(mid_channels, mid_channels,
                  kernel_size=3, stride=1, padding=1),
-            nn.Conv2d(out_channels, out_channels, kernel_size=1, stride=1),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=1, stride=1),
         )
 
     def initialize_biases(self):
@@ -87,7 +96,7 @@ class Head(nn.Module):
 
         # --- Inference decode ---
         anchors, strides = (
-            i.transpose(0, 1) for i in self._make_anchors(x, self.stride))
+            i.transpose(0, 1) for i in make_anchors(x, self.stride))
         y = torch.cat(
             [i.view(x[0].shape[0], self.no, -1) for i in x], dim=2)
         box, cls = y.split(split_size=(4 * self.ch, self.nc), dim=1)
@@ -101,19 +110,3 @@ class Head(nn.Module):
             tensors=(box * strides, cls.sigmoid()), dim=1)
         # Also return the raw tensors for the validation loss.
         return inference_out, x
-
-    @staticmethod
-    def _make_anchors(x, strides, offset=0.5):
-        """Build anchor center points and per-anchor stride values."""
-        assert x is not None
-        anchor_tensor, stride_tensor = [], []
-        dtype, device = x[0].dtype, x[0].device
-        for i, stride in enumerate(strides):
-            _, _, h, w = x[i].shape
-            sx = torch.arange(end=w, device=device, dtype=dtype) + offset
-            sy = torch.arange(end=h, device=device, dtype=dtype) + offset
-            sy, sx = torch.meshgrid(sy, sx, indexing='ij')
-            anchor_tensor.append(torch.stack((sx, sy), -1).view(-1, 2))
-            stride_tensor.append(torch.full(
-                (h * w, 1), float(stride), dtype=dtype, device=device))
-        return torch.cat(anchor_tensor), torch.cat(stride_tensor)

@@ -3,8 +3,25 @@
 import numpy as np
 import torch
 
-# np.trapz was removed in NumPy >= 2.0 (renamed np.trapezoid).
-_trapezoid = getattr(np, 'trapezoid', None) or np.trapz
+
+def average_precision_101(recall, precision):
+    """COCO 101-point interpolated AP for one class at one IoU.
+
+    Single implementation shared by the per-epoch validation and the
+    full evaluation CLI, so `map50` means the same thing in
+    history.csv and in results.csv.
+
+    Args:
+        recall: cumulative recall values, sorted by descending conf.
+        precision: matching cumulative precision values.
+    """
+    p_envelope = np.flip(np.maximum.accumulate(np.flip(precision)))
+    x_eval = np.linspace(0, 1, 101)
+    # Below the first reached recall, the precision is the envelope
+    # start; above the last reached recall, the precision is zero.
+    p_interp = np.interp(x_eval, recall, p_envelope,
+                         left=float(p_envelope[0]), right=0.0)
+    return float(p_interp.mean())
 
 
 def compute_metric(output, target, iou_v):
@@ -86,11 +103,8 @@ def compute_ap(tp, conf, pred_cls, target_cls, eps=1e-16):
         p[ci] = np.interp(-px, -conf[i], precision[:, 0], left=1)
 
         for j in range(tp.shape[1]):
-            m_rec = np.concatenate(([0.0], recall[:, j], [1.0]))
-            m_pre = np.concatenate(([1.0], precision[:, j], [0.0]))
-            m_pre = np.flip(np.maximum.accumulate(np.flip(m_pre)))
-            x = np.linspace(0, 1, 101)
-            ap[ci, j] = _trapezoid(np.interp(x, m_rec, m_pre), x)
+            ap[ci, j] = average_precision_101(
+                recall[:, j], precision[:, j])
 
     f1 = 2 * p * r / (p + r + eps)
     i = _smooth(f1.mean(0), 0.1).argmax()

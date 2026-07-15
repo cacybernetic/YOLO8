@@ -2,7 +2,8 @@
 
 from .boxes import wh2xy, box_iou_numpy, build_val_targets
 from .nms import non_max_suppression
-from .ap import compute_metric, compute_ap, MetricAccumulator
+from .ap import (compute_metric, compute_ap, MetricAccumulator,
+                 average_precision_101)
 from .evaluation import (
     match_predictions_to_gt,
     compute_ap_per_class,
@@ -20,6 +21,7 @@ __all__ = [
     'non_max_suppression',
     'compute_metric',
     'compute_ap',
+    'average_precision_101',
     'MetricAccumulator',
     'match_predictions_to_gt',
     'compute_ap_per_class',

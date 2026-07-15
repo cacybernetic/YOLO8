@@ -71,3 +71,25 @@ def test_tiny_dataset_does_not_crash():
     for step in range(6):
         sched.step(step, opt)
     assert sched.decay_steps >= 1
+
+
+def test_warmup_zero_is_respected():
+    """warmup_epochs=0 must really disable the warmup (no 100-step
+    floor sneaking back in)."""
+    sched = build_scheduler('cosine', max_lr=0.01, min_lr=0.0001,
+                            warmup_epochs=0, total_epochs=10,
+                            num_steps=50)
+    assert sched.warmup_steps == 0
+    opt = _optimizer_with_groups()
+    sched.step(0, opt)
+    assert abs(opt.param_groups[0]['lr'] - 0.01) < 1e-9
+
+
+def test_warmup_capped_to_fraction_of_budget():
+    """On a short run, the warmup must leave a real decay phase."""
+    sched = build_scheduler('cosine', max_lr=0.01, min_lr=0.0001,
+                            warmup_epochs=3, total_epochs=2,
+                            num_steps=20)
+    total = 2 * 20
+    assert sched.warmup_steps <= 0.3 * total
+    assert sched.decay_steps >= 0.7 * total - 1

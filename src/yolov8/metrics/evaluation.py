@@ -11,6 +11,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
+from .ap import average_precision_101
 from .boxes import box_iou_numpy
 
 
@@ -105,16 +106,10 @@ def _class_ap(tp_c, conf_c, n_gt_c, n_pred_c, px, eps):
     n_iou = tp_c.shape[1]
     ap_per_iou = np.zeros(n_iou)
     for k in range(n_iou):
-        r = recall_cum[:, k]
-        p = precision_cum[:, k]
-        p_envelope = np.flip(np.maximum.accumulate(np.flip(p)))
-        x_eval = np.linspace(0, 1, 101)
-        # COCO interpolation: below the first reached recall, the
-        # precision is the envelope start; above the last reached
-        # recall, the precision is zero.
-        p_interp = np.interp(x_eval, r, p_envelope,
-                             left=float(p_envelope[0]), right=0.0)
-        ap_per_iou[k] = p_interp.mean()
+        # Shared COCO 101-point interpolation (same as the per-epoch
+        # validation), so both mAP paths agree.
+        ap_per_iou[k] = average_precision_101(
+            recall_cum[:, k], precision_cum[:, k])
 
     # Curves on the confidence grid, at IoU 0.5 (k = 0).
     p_curve = np.interp(-px, -conf_c, precision_cum[:, 0], left=1)

@@ -4,10 +4,10 @@ Usage:
     yltrain --config gpu/configs/train.yaml
 
 The program runs three passes per the project spec: training,
-per-epoch validation on a fraction of the test set, and a final
-evaluation on the full test set. Outputs go to
-runs/<run_name>/train[i]/ (weights, checkpoints, plots, logs,
-history.csv, config_used.yaml).
+per-epoch validation on a fraction of the test split, and a final
+evaluation on the held-out remainder of the test split (disjoint from
+the validation part). Outputs go to runs/<run_name>/train[i]/
+(weights, checkpoints, plots, logs, history.csv, config_used.yaml).
 """
 
 import argparse
@@ -48,25 +48,31 @@ def build_dataloaders(cfg: TrainConfig, device):
     train_ds = build_train_dataset(cfg.dataset, seed=cfg.seed)
     test_ds = build_test_dataset(cfg.dataset, seed=cfg.seed)
     names = resolve_class_names(cfg.dataset, train_ds, test_ds)
-    val_ds = split_val_from_test(
+    # val and final test are DISJOINT parts of the test split, so the
+    # model selection never sees the samples of the final evaluation.
+    val_ds, final_test_ds = split_val_from_test(
         test_ds, cfg.dataset.val_prob, seed=cfg.seed)
     logger.info(f"Data: train={len(train_ds)} | val={len(val_ds)} | "
-                f"test={len(test_ds)} | classes={len(names)}")
+                f"final test={len(final_test_ds)} | "
+                f"classes={len(names)}")
 
     opt = cfg.optimization
     pin = device.type == 'cuda'
+    # Persistent workers: keep the train workers alive across epochs
+    # instead of re-spawning them every epoch. The trainer restarts
+    # them explicitly when close_mosaic mutates the augmentations.
     train_loader = DataLoaderAdapter(
         train_ds, batch_size=opt.batch_size, shuffle=True,
         num_workers=opt.num_workers,
         collate_fn=collate_detection_batch, pin_memory=pin,
-        drop_last=True, seed=cfg.seed)
+        drop_last=True, seed=cfg.seed, persistent=True)
     val_loader = DataLoaderAdapter(
         val_ds, batch_size=opt.batch_size, shuffle=False,
         num_workers=opt.num_workers,
         collate_fn=collate_detection_batch, pin_memory=pin,
         drop_last=False, seed=cfg.seed)
     test_loader = DataLoaderAdapter(
-        test_ds, batch_size=opt.batch_size, shuffle=False,
+        final_test_ds, batch_size=opt.batch_size, shuffle=False,
         num_workers=opt.num_workers,
         collate_fn=collate_detection_batch, pin_memory=pin,
         drop_last=False, seed=cfg.seed)
@@ -92,9 +98,21 @@ def build_training_objects(cfg: TrainConfig, model, device,
                            steps_per_epoch):
     """Optimizer, scheduler, EMA and AMP scaler from the config."""
     opt = cfg.optimization
+    # Ultralytics convention: the default weight decay (0.0005) was
+    # tuned for an effective batch of `nbs` (64). Smaller batches need
+    # proportionally less decay, otherwise they are over-regularized.
+    weight_decay = opt.weight_decay
+    if opt.nbs and opt.nbs > 0:
+        effective_bs = opt.batch_size * max(opt.grad_accum, 1)
+        weight_decay = opt.weight_decay * effective_bs / opt.nbs
+        if abs(weight_decay - opt.weight_decay) > 1e-12:
+            logger.info(
+                f"weight_decay scaled: {opt.weight_decay} -> "
+                f"{weight_decay:.6f} (effective batch {effective_bs} "
+                f"/ nbs {opt.nbs})")
     optimizer = build_optimizer(
         model, name=opt.optimizer, lr=opt.max_lr,
-        momentum=opt.momentum, weight_decay=opt.weight_decay)
+        momentum=opt.momentum, weight_decay=weight_decay)
     scheduler = build_scheduler(
         opt.scheduler, opt.max_lr, opt.min_lr, opt.warmup_epochs,
         opt.epochs, steps_per_epoch, momentum=opt.momentum,

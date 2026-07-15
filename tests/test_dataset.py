@@ -38,6 +38,18 @@ def test_parse_label_empty_file_is_valid():
     assert rows == []
 
 
+def test_parse_label_rejects_out_of_range_class():
+    """A class id >= nc must be rejected at scan time: it would crash
+    the loss assigner much later with an obscure error."""
+    reason, _, rows = parse_label_text("5 0.5 0.5 0.2 0.3\n",
+                                       num_classes=2)
+    assert reason == 'bad_class'
+    assert rows is None
+    # Without a known class count the id is accepted (HDF5 rebuilds).
+    reason, _, rows = parse_label_text("5 0.5 0.5 0.2 0.3\n")
+    assert reason is None
+
+
 def test_directory_source(tiny_dataset):
     source = make_source(tiny_dataset['train'])
     images = source.list_images()
@@ -69,6 +81,37 @@ def test_scan_cache_roundtrip(tiny_zip_dataset):
                       verbose=False)
     assert [s['image'] for s in ds1.samples] == \
            [s['image'] for s in ds2.samples]
+
+
+def test_scan_cache_invalidated_by_label_edit(tiny_dataset):
+    """Editing a label file in place must trigger a rescan: training
+    on stale cached labels would be silent and unfixable."""
+    import time
+
+    ds1 = YoloDataset(tiny_dataset['train'], image_size=96,
+                      verbose=False)
+    first = list(ds1.samples[0]['labels'][0])
+
+    time.sleep(0.02)  # ensure a different mtime
+    label_file = tiny_dataset['train'] / 'labels' / 'img_000.txt'
+    label_file.write_text("1 0.25 0.25 0.1 0.1\n")
+
+    ds2 = YoloDataset(tiny_dataset['train'], image_size=96,
+                      verbose=False)
+    second = list(ds2.samples[0]['labels'][0])
+    assert second != first
+    assert second == [1.0, 0.25, 0.25, 0.1, 0.1]
+
+
+def test_split_val_and_final_test_are_disjoint(tiny_dataset):
+    from yolov8.dataset.factory import split_val_from_test
+
+    ds = YoloDataset(tiny_dataset['test'], image_size=96, verbose=False)
+    val, final_test = split_val_from_test(ds, val_prob=0.5, seed=0)
+    val_idx = set(val.indices)
+    test_idx = set(final_test.indices)
+    assert val_idx.isdisjoint(test_idx)
+    assert len(val_idx) + len(test_idx) == len(ds)
 
 
 def test_dataset_getitem_shapes(tiny_dataset):

@@ -72,9 +72,11 @@ either on a single image or in real-time from a webcam.
 - **Structured run folders**: `runs/<name>/train`, `train2`, ... and
   `eval`, `eval2`, ... each with `weights/`, `checkpoints/`, `plotes/`,
   `logs/`, `history.csv` and `config_used.yaml`.
-- **Validation from the test set**: `val_prob` takes a deterministic
-  fraction of the test split for per-epoch validation; the final
-  evaluation runs on the full test set.
+- **Disjoint validation / final test**: `val_prob` takes a
+  deterministic fraction of the test split for per-epoch validation
+  (model selection, early stopping); the final evaluation runs on the
+  **held-out remainder**, so the reported test metrics are never
+  computed on samples that drove the model selection.
 - Rich augmentations: **mosaic** (with `close_mosaic`), HSV jitter,
   affine transforms, MixUp, Cutout, blur, noise, grayscale.
 - Cosine and linear LR schedulers with full warm-up (LR, per-group bias
@@ -222,8 +224,10 @@ to [0, 1]:
 ```
 
 Train and test are given separately (`train_path`, `test_path`). The
-validation split is taken from the test set with `val_prob` (default
-0.5). Sample caps are available via `max_train_samples` /
+test split is divided into two **disjoint** parts with `val_prob`
+(default 0.5): a validation part used for the per-epoch metrics and
+the model selection, and a held-out part used for the final
+evaluation. Sample caps are available via `max_train_samples` /
 `max_test_samples`.
 
 Before anything runs, the dataset is scanned: corrupt images, missing
@@ -273,7 +277,7 @@ Everything lands in `runs/<run_name>/train[i]/`:
 - `checkpoints/checkpoint_eXXXXcYYYY.pth` — fault-tolerance snapshots
 - `plotes/training_history.png`, `history.csv`, `logs/`,
   `config_used.yaml`
-- `test_results.csv` — final evaluation on the full test set
+- `test_results.csv` — final evaluation on the held-out test part
 
 With `resume: true` (default), restarting the same command reuses the
 latest run folder and continues from the newest checkpoint — even in

@@ -131,13 +131,17 @@ def _log_native_summary(model: nn.Module):
     logger.info(f"  Non-trainable:    {total - trainable:>12,}")
 
 
-def safe_torch_load(path, map_location='cpu'):
-    """Load a checkpoint, safe deserialization first.
+def safe_torch_load(path, map_location='cpu', allow_pickle=False):
+    """Load a checkpoint with safe deserialization by default.
 
     `torch.load(weights_only=False)` runs arbitrary pickle code, which
-    is a code execution risk on untrusted files. We first try
-    `weights_only=True` (enough for our checkpoints: tensors and simple
-    types), and only fall back to full pickle with a clear warning.
+    is a code execution risk on untrusted files. The safe mode
+    (`weights_only=True`) covers every checkpoint this project writes.
+
+    An automatic fallback to full pickle would defeat the protection
+    (a malicious file only has to make the safe load fail), so the
+    fallback is opt-in: pass `allow_pickle=True` ONLY for files you
+    fully trust.
     """
     try:
         return torch.load(path, map_location=map_location,
@@ -145,9 +149,16 @@ def safe_torch_load(path, map_location='cpu'):
     except TypeError:
         # Old PyTorch without the weights_only argument.
         return torch.load(path, map_location=map_location)
-    except Exception:
+    except Exception as e:
+        if not allow_pickle:
+            raise RuntimeError(
+                f"Safe load (weights_only=True) failed for '{path}'. "
+                f"This file needs full pickle deserialization, which "
+                f"can execute arbitrary code. If you fully trust it, "
+                f"load it with allow_pickle=True.\n  Cause: {e}"
+            ) from e
         logger.warning(
-            f"'{path}': safe load (weights_only=True) failed, falling "
-            f"back to full pickle. Only load trusted files.")
+            f"'{path}': safe load failed, falling back to full pickle "
+            f"(allow_pickle=True). Only load trusted files.")
         return torch.load(path, map_location=map_location,
                           weights_only=False)

@@ -2,6 +2,7 @@
 
 import random
 
+import cv2
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -126,22 +127,64 @@ class YoloDataset(Dataset):
             count += 1
         return result
 
+    def _load_raw(self, idx):
+        """Read one image resized so its LONG side equals `image_size`.
+
+        No letterbox padding: this is the YOLOv5/v8 mosaic convention.
+        The normalized labels stay valid after a pure resize.
+        Returns (img, labels) or None when the image cannot be read.
+        """
+        sample = self.samples[idx]
+        try:
+            data = self.source.read_image_bytes(sample['image'])
+        except Exception:
+            return None
+        img = decode_image_bytes(data)
+        if img is None:
+            return None
+        h, w = img.shape[:2]
+        r = self.image_size / max(h, w)
+        if r != 1:
+            img = cv2.resize(img, (int(round(w * r)), int(round(h * r))),
+                             interpolation=cv2.INTER_LINEAR)
+        labels = np.array(sample['labels'], dtype=np.float32)
+        return img, labels.reshape(-1, 5)
+
+    def _load_raw_retry(self, idx, attempts=10):
+        """Load a raw sample, retry on random indexes when it fails."""
+        result = self._load_raw(idx)
+        count = 0
+        while result is None and count < attempts:
+            idx = random.randint(0, len(self) - 1)
+            result = self._load_raw(idx)
+            count += 1
+        return result
+
     def _mixup_loader(self):
-        """Loader callback used by MixUp inside the Augmenter."""
+        """Loader callback used by MixUp inside the Augmenter.
+
+        The partner sample goes through the SAME mosaic + geometry
+        treatment as a main sample (YOLOv8 mixes two fully built
+        mosaics), so both sides of the blend share one distribution.
+        """
         j = random.randint(0, len(self) - 1)
+        if self.augmenter.use_mosaic():
+            img, labels = self._load_mosaic(j)
+            return self.augmenter.geometry(img, labels, mosaic_used=True)
         result = self._load_sample(j)
         if result is None:
             return None
         img, labels, _ = result
-        return img, labels
+        return self.augmenter.geometry(img, labels, mosaic_used=False)
 
     def _load_mosaic(self, idx):
         """4-image mosaic (YOLOv5/v8 convention).
 
         Build a 2s x 2s canvas with a random center in [0.5s, 1.5s]^2,
-        paste 4 letterboxed s x s images (the requested one plus 3
-        random ones) and fix the labels. The canvas is then cropped
-        back to s x s by random_affine inside the Augmenter.
+        paste 4 images resized on their long side (the requested one
+        plus 3 random ones, no letterbox padding) and fix the labels.
+        The canvas is then cropped back to s x s by random_affine
+        inside the Augmenter.
         """
         s = self.image_size
         indices = [idx] + [random.randint(0, len(self) - 1)
@@ -152,10 +195,10 @@ class YoloDataset(Dataset):
         labels4 = []
 
         for i, index in enumerate(indices):
-            result = self._load_sample_retry(index)
+            result = self._load_raw_retry(index)
             if result is None:
                 continue  # tile stays gray (heavily corrupted dataset)
-            img, labels, _ = result
+            img, labels = result
             placed = self._place_mosaic_tile(canvas, img, i, xc, yc, s)
             if labels.size:
                 labels4.append(self._shift_labels(labels, img, placed))

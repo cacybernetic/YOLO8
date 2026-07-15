@@ -13,13 +13,17 @@ from tqdm import tqdm
 
 from .validation import parse_label_text, check_image_bytes
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 
 def scan_source(source, validate_images=True, strict=False, verbose=True):
     """Scan the source and return the list of valid samples.
 
     Each sample is a dict: {'image': key, 'labels': [[c,cx,cy,w,h], ...]}.
+
+    When the source ships a data.yaml, the class ids are also checked
+    against the class count: an out-of-range id would crash the loss
+    assigner much later with an obscure error.
 
     Args:
         source: a SampleSource.
@@ -31,17 +35,22 @@ def scan_source(source, validate_images=True, strict=False, verbose=True):
     if len(image_keys) == 0:
         raise RuntimeError(f"No image found in source: {source}")
 
+    names = source.read_names()
+    num_classes = len(names) if names else None
+
     samples = []
     stats = {'total': len(image_keys), 'missing_label': 0,
              'empty_label': 0, 'bad_format': 0, 'bad_values': 0,
-             'corrupt_image': 0, 'kept': 0, 'kept_with_cleaning': 0}
+             'bad_class': 0, 'corrupt_image': 0, 'kept': 0,
+             'kept_with_cleaning': 0}
     error_examples = []
 
     iterator = tqdm(image_keys, desc="validating dataset",
                     disable=not verbose, leave=False, dynamic_ncols=True,
                     ascii="░█")
     for key in iterator:
-        sample, reason, cleaned = _scan_one(source, key, validate_images)
+        sample, reason, cleaned = _scan_one(source, key, validate_images,
+                                            num_classes)
         if sample is None:
             stats[reason] += 1
             if len(error_examples) < 5:
@@ -59,7 +68,7 @@ def scan_source(source, validate_images=True, strict=False, verbose=True):
     return samples, stats
 
 
-def _scan_one(source, key, validate_images):
+def _scan_one(source, key, validate_images, num_classes=None):
     """Validate one image + label pair.
 
     Returns (sample, None, cleaned) or (None, reason, False).
@@ -67,7 +76,7 @@ def _scan_one(source, key, validate_images):
     text = source.read_label_text(key)
     if text is None:
         return None, 'missing_label', False
-    reason, cleaned, labels = parse_label_text(text)
+    reason, cleaned, labels = parse_label_text(text, num_classes)
     if reason is not None:
         return None, reason, False
     if validate_images:
@@ -89,6 +98,7 @@ def _log_scan_report(stats, error_examples, validate_images):
         logger.warning(f"  - empty label:    {stats['empty_label']}")
         logger.warning(f"  - bad format:     {stats['bad_format']}")
         logger.warning(f"  - bad values:     {stats['bad_values']}")
+        logger.warning(f"  - bad class id:   {stats['bad_class']}")
         if validate_images:
             logger.warning(f"  - corrupt image:  {stats['corrupt_image']}")
         for e in error_examples:

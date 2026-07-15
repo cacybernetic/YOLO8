@@ -51,9 +51,46 @@ def test_loss_with_empty_targets():
         'box': torch.zeros((0, 4)),
     }
     loss_box, loss_cls, loss_dfl = loss_fn(outputs, targets)
-    assert float(loss_box) == 0.0
-    assert float(loss_dfl) == 0.0
+    assert float(loss_box.detach()) == 0.0
+    assert float(loss_dfl.detach()) == 0.0
     assert torch.isfinite(loss_cls)
+
+
+def test_loss_rejects_out_of_range_class():
+    """A class id >= nc must fail with a clear message instead of an
+    obscure CUDA device-side assert deep inside the assigner."""
+    import pytest
+
+    loss_fn, outputs = _make_loss_and_outputs(num_classes=3)
+    targets = {
+        'idx': torch.tensor([0.0]),
+        'cls': torch.tensor([7.0]),
+        'box': torch.tensor([[0.5, 0.5, 0.2, 0.2]]),
+    }
+    with pytest.raises(ValueError, match="out of range"):
+        loss_fn(outputs, targets)
+
+
+def test_loss_gt_packing_matches_reference():
+    """The vectorized target packing must equal a per-image loop."""
+    loss_fn, _ = _make_loss_and_outputs(num_classes=3, batch_size=3)
+    targets = {
+        'idx': torch.tensor([2.0, 0.0, 2.0, 0.0, 1.0]),
+        'cls': torch.tensor([0.0, 1.0, 2.0, 0.0, 1.0]),
+        'box': torch.rand(5, 4) * 0.4 + 0.3,
+    }
+    gt = loss_fn._build_gt(targets, batch_size=3, image_wh=(128, 128))
+    assert gt.shape == (3, 2, 5)
+    # Rebuild with an explicit loop and compare.
+    for j in range(3):
+        rows = [(c, b) for i, c, b in zip(
+            targets['idx'], targets['cls'], targets['box'])
+            if int(i) == j]
+        for slot, (c, b) in enumerate(rows):
+            assert float(gt[j, slot, 0]) == float(c)
+            cx, cy, w, h = (float(v) for v in b)
+            assert abs(float(gt[j, slot, 1]) - (cx - w / 2) * 128) < 1e-4
+            assert abs(float(gt[j, slot, 4]) - (cy + h / 2) * 128) < 1e-4
 
 
 def test_loss_accepts_eval_tuple():

@@ -291,6 +291,8 @@ def evaluate(cfg: EvalConfig, run_dir):
 
 
 def _global_counts(data, best_conf):
+    """TP/FP/FN counts, all filtered at the SAME confidence threshold
+    so that n_tp + n_fp == n_pred in the report."""
     keep = data['conf'] >= best_conf
     tp_filtered = data['tp_matrix'][keep, 0] if data['tp_matrix'].size \
         else np.zeros(0, dtype=bool)
@@ -298,7 +300,7 @@ def _global_counts(data, best_conf):
     n_gt = int(data['target_cls'].size)
     return {
         'n_gt': n_gt,
-        'n_pred': int(data['pred_cls'].size),
+        'n_pred': int(keep.sum()),
         'n_tp': n_tp,
         'n_fp': int((~tp_filtered).sum()),
         'n_fn': max(0, n_gt - n_tp),

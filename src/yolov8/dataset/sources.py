@@ -23,6 +23,24 @@ from .names import parse_data_yaml
 IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.bmp', '.webp')
 
 
+def _dir_state(directory):
+    """(file count, newest file mtime) of a folder, or (0, 0.0).
+
+    Editing a file in place updates its own mtime but NOT the folder
+    mtime, so the fingerprint must look at the files themselves —
+    otherwise fixing a label would silently keep the stale scan cache.
+    """
+    directory = Path(directory)
+    if not directory.is_dir():
+        return 0, 0.0
+    count, latest = 0, 0.0
+    for entry in os.scandir(directory):
+        if entry.is_file():
+            count += 1
+            latest = max(latest, entry.stat().st_mtime)
+    return count, latest
+
+
 class SampleSource:
     """Base class for dataset sources."""
 
@@ -106,12 +124,16 @@ class DirectorySource(SampleSource):
         return None
 
     def fingerprint(self):
-        files = list(self.images_dir.iterdir())
+        n_images, images_mtime = _dir_state(self.images_dir)
+        labels_dir = self.images_dir.parent / 'labels'
+        n_labels, labels_mtime = _dir_state(labels_dir)
         return {
             'kind': 'directory',
             'path': str(self.root.resolve()),
-            'n_images': len(files),
-            'mtime': self.images_dir.stat().st_mtime,
+            'n_images': n_images,
+            'images_mtime': images_mtime,
+            'n_labels': n_labels,
+            'labels_mtime': labels_mtime,
         }
 
     def cache_path(self):

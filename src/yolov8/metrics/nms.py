@@ -28,7 +28,9 @@ def non_max_suppression(outputs, confidence_threshold=0.001,
     xc = outputs[:, 4:4 + nc].amax(1) > confidence_threshold
 
     start = time()
-    output = [torch.zeros((0, 6), device=outputs.device)] * bs
+    # One tensor per image (no aliasing of a single shared tensor).
+    output = [torch.zeros((0, 6), device=outputs.device)
+              for _ in range(bs)]
 
     for index, x in enumerate(outputs):
         x = x.transpose(0, -1)[xc[index]]
