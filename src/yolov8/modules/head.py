@@ -27,7 +27,7 @@ class Head(nn.Module):
         self.no = self.coordinates + self.nc
         # Non persistent buffer: follows model.to(device) but stays out of
         # the state_dict (keeps old checkpoints loadable).
-        # Values are set by MyYolo after construction.
+        # Values are set by YOLO after construction.
         self.register_buffer('stride', torch.zeros(3), persistent=False)
 
         d, w, r = yolo_params(version=version)

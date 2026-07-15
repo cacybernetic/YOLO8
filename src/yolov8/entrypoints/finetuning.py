@@ -26,7 +26,7 @@ from yolov8.config import FinetuneConfig, load_finetune_config
 from yolov8.devices import resolve_device
 from yolov8.logging import (setup_logging, log_model_summary,
                             safe_torch_load)
-from yolov8.model import MyYolo
+from yolov8.model import YOLO
 from yolov8.training.checkpoints import atomic_save
 
 
@@ -144,7 +144,7 @@ def run_finetune_build(cfg: FinetuneConfig):
     logger.info(f"version={cfg.version} | old_nc={cfg.old_num_classes} "
                 f"-> new_nc={cfg.new_num_classes}")
 
-    new_model = MyYolo(version=cfg.version,
+    new_model = YOLO(version=cfg.version,
                        num_classes=cfg.new_num_classes,
                        input_size=cfg.image_size).to(device)
     src_state = load_source_state(cfg, device)

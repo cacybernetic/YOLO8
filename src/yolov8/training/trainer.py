@@ -228,7 +228,7 @@ class Trainer:
         epoch_bar.close()
 
         results = self._run_final_test()
-        logger.success("Training finished.")
+        logger.info("Training finished.")
         if self.best_metric > -float('inf'):
             logger.info(f"Best {self.cfg.checkpoint.best_metric}: "
                         f"{self.best_metric:.4f}")
@@ -318,7 +318,7 @@ class Trainer:
         self._ensure_finite(stats['total'], f"epoch {epoch + 1}")
         self.train_meters.reset()
         elapsed = time.time() - t0
-        logger.success(
+        logger.info(
             f"epoch {epoch + 1} train done in {elapsed:.1f}s | "
             f"box={stats['box']:.4f} cls={stats['cls']:.4f} "
             f"dfl={stats['dfl']:.4f} total={stats['total']:.4f}")

@@ -18,14 +18,14 @@ from yolov8.config import load_export_config, ExportConfig
 from yolov8.devices import resolve_device
 from yolov8.logging import (setup_logging, log_model_summary,
                             safe_torch_load)
-from yolov8.model import MyYolo
+from yolov8.model import YOLO
 from yolov8.onnx_export import (YoloExportWrapper, export_to_onnx,
                                 check_onnx_graph, simplify_onnx,
                                 convert_to_fp16, verify_numerical)
 
 
 def load_model(cfg: ExportConfig, device):
-    model = MyYolo(version=cfg.version, num_classes=cfg.num_classes,
+    model = YOLO(version=cfg.version, num_classes=cfg.num_classes,
                    input_size=cfg.image_size).to(device)
     weights_path = Path(cfg.weights)
     if not weights_path.exists():

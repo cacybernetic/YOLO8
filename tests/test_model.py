@@ -5,7 +5,7 @@ import time
 import pytest
 import torch
 
-from yolov8.model import MyYolo
+from yolov8.model import YOLO
 from yolov8.modules import yolo_params
 
 
@@ -17,12 +17,12 @@ def test_yolo_params_known_versions():
 
 
 def test_strides_are_calibrated():
-    model = MyYolo(version='n', num_classes=3, input_size=128)
+    model = YOLO(version='n', num_classes=3, input_size=128)
     assert model.head.stride.tolist() == [8.0, 16.0, 32.0]
 
 
 def test_training_output_shapes():
-    model = MyYolo(version='n', num_classes=3, input_size=128)
+    model = YOLO(version='n', num_classes=3, input_size=128)
     model.train()
     outputs = model(torch.zeros(2, 3, 128, 128))
     assert len(outputs) == 3
@@ -33,7 +33,7 @@ def test_training_output_shapes():
 
 
 def test_eval_output_shapes():
-    model = MyYolo(version='n', num_classes=3, input_size=128)
+    model = YOLO(version='n', num_classes=3, input_size=128)
     model.eval()
     inference, raw = model(torch.zeros(1, 3, 128, 128))
     n_anchors = 16 * 16 + 8 * 8 + 4 * 4
@@ -46,14 +46,14 @@ def test_eval_output_shapes():
 
 
 def test_parameter_count_nano():
-    model = MyYolo(version='n', num_classes=80)
+    model = YOLO(version='n', num_classes=80)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     # YOLOv8n (80 classes) has 3.157 million parameters.
     assert abs(n_params - 3.157) < 0.01
 
 
 def test_parameter_count_small():
-    model = MyYolo(version='s', num_classes=80)
+    model = YOLO(version='s', num_classes=80)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     # YOLOv8s (80 classes) has 11.166 million parameters.
     assert abs(n_params - 11.166) < 0.01
@@ -63,7 +63,7 @@ def test_cls_head_width_not_capped_by_small_class_count():
     """The cls branch must keep a wide intermediate width even with a
     tiny class count (a 1-channel bottleneck would cap the mAP)."""
     for nc in (1, 2, 10):
-        model = MyYolo(version='n', num_classes=nc)
+        model = YOLO(version='n', num_classes=nc)
         branch = model.head.cls[0]
         assert branch[0].conv.out_channels >= 64
         assert branch[1].conv.out_channels >= 64
@@ -71,7 +71,7 @@ def test_cls_head_width_not_capped_by_small_class_count():
 
 
 def test_forward_speed_cpu():
-    model = MyYolo(version='n', num_classes=3, input_size=128)
+    model = YOLO(version='n', num_classes=3, input_size=128)
     model.eval()
     x = torch.zeros(1, 3, 128, 128)
     with torch.no_grad():

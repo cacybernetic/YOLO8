@@ -9,7 +9,7 @@ from yolov8.dataset.factory import (build_train_dataset,
                                     build_test_dataset,
                                     split_val_from_test)
 from yolov8.lossfn import ComputeLoss
-from yolov8.model import MyYolo
+from yolov8.model import YOLO
 from yolov8.training import (Trainer, build_optimizer, build_scheduler,
                              prepare_run_dir, CheckpointManager)
 
@@ -47,7 +47,7 @@ def _make_trainer(cfg, run_dir):
     val_loader = DataLoaderAdapter(val_ds, **kwargs)
     test_loader = DataLoaderAdapter(final_test_ds, **kwargs)
 
-    model = MyYolo(version='n', num_classes=2, input_size=64)
+    model = YOLO(version='n', num_classes=2, input_size=64)
     loss_fn = ComputeLoss(model, cfg.loss.gains())
     optimizer = build_optimizer(model, lr=cfg.optimization.max_lr)
     scheduler = build_scheduler(
@@ -126,5 +126,5 @@ def test_best_and_last_weights_load_back(tiny_dataset, tmp_path):
 
     payload = torch.load(run_dir / 'weights' / 'last.pt',
                          map_location='cpu', weights_only=True)
-    model = MyYolo(version='n', num_classes=2, input_size=64)
+    model = YOLO(version='n', num_classes=2, input_size=64)
     model.load_state_dict(payload['model'])  # strict load must pass

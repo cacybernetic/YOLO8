@@ -37,7 +37,7 @@ from yolov8.metrics import (non_max_suppression, build_val_targets,
                             metrics_at_threshold,
                             build_confusion_matrix,
                             build_per_class_table, build_global_table)
-from yolov8.model import MyYolo
+from yolov8.model import YOLO
 from yolov8.plotting import (plot_pr_curves, plot_f1_confidence,
                              plot_confusion_matrix)
 from yolov8.training import prepare_run_dir, save_config_used
@@ -45,7 +45,7 @@ from yolov8.training import prepare_run_dir, save_config_used
 
 def load_model(cfg: EvalConfig, num_classes, device):
     """Build the model and load the weights with a strict check."""
-    model = MyYolo(version=cfg.model.version, num_classes=num_classes,
+    model = YOLO(version=cfg.model.version, num_classes=num_classes,
                    input_size=cfg.dataset.image_size).to(device)
     weights_path = Path(cfg.weights)
     if not weights_path.exists():

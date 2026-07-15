@@ -1,6 +1,6 @@
 """YOLOv8 from scratch: training, evaluation and export package."""
 
-from .model import MyYolo
+from .model import YOLO
 from .lossfn import ComputeLoss
 from .dataset import (YoloDataset, YOLODataset, Hdf5Dataset,
                       DataLoaderAdapter, collate_detection_batch)
@@ -14,7 +14,7 @@ from .config import (
 from .training import Trainer, ModelEMA
 
 __all__ = [
-    'MyYolo',
+    'YOLO',
     'ComputeLoss',
     'YoloDataset',
     'YOLODataset',

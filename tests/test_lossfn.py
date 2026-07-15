@@ -3,11 +3,11 @@
 import torch
 
 from yolov8.lossfn import ComputeLoss, compute_iou
-from yolov8.model import MyYolo
+from yolov8.model import YOLO
 
 
 def _make_loss_and_outputs(num_classes=3, batch_size=2, size=128):
-    model = MyYolo(version='n', num_classes=num_classes,
+    model = YOLO(version='n', num_classes=num_classes,
                    input_size=size)
     loss_fn = ComputeLoss(model, {'box': 7.5, 'cls': 0.5, 'dfl': 1.5})
     model.train()
@@ -95,7 +95,7 @@ def test_loss_gt_packing_matches_reference():
 
 def test_loss_accepts_eval_tuple():
     loss_fn, _ = _make_loss_and_outputs()
-    model = MyYolo(version='n', num_classes=3, input_size=128)
+    model = YOLO(version='n', num_classes=3, input_size=128)
     loss_fn2 = ComputeLoss(model, {'box': 7.5, 'cls': 0.5, 'dfl': 1.5})
     model.eval()
     out = model(torch.zeros(1, 3, 128, 128))

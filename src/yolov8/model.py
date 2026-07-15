@@ -6,7 +6,7 @@ import torch.nn as nn
 from yolov8.modules import Backbone, Neck, Head, yolo_params  # noqa: F401
 
 
-class MyYolo(nn.Module):
+class YOLO(nn.Module):
     """YOLOv8 detection model.
 
     The constructor also calibrates the head strides with a dummy forward
@@ -50,7 +50,7 @@ class MyYolo(nn.Module):
 if __name__ == "__main__":
     # Quick sanity check of shapes and parameter counts.
     for v in ['n', 's']:
-        m = MyYolo(version=v, num_classes=80)
+        m = YOLO(version=v, num_classes=80)
         n_params = sum(p.numel() for p in m.parameters()) / 1e6
         print(f"YOLOv8-{v}: {n_params:.4f} M parameters, "
               f"strides={m.head.stride.tolist()}")

@@ -7,20 +7,20 @@ import torch
 import torch.nn as nn
 from loguru import logger
 
-from yolov8.model import MyYolo
+from yolov8.model import YOLO
 
 
 class YoloExportWrapper(nn.Module):
     """Minimal wrapper for the ONNX export.
 
-    In eval mode MyYolo returns (inference_out, raw_outputs). For a
+    In eval mode YOLO returns (inference_out, raw_outputs). For a
     clean ONNX graph we only keep `inference_out`:
       (B, 4 + num_classes, num_anchors)
         - first 4 rows: (cx, cy, w, h) in image space (already * stride)
         - next rows: class scores after sigmoid, in [0, 1]
     """
 
-    def __init__(self, model: MyYolo):
+    def __init__(self, model: YOLO):
         super().__init__()
         self.model = model
 

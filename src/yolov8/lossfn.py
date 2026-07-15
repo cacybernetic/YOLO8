@@ -229,7 +229,7 @@ class ComputeLoss:
         # Safety check: the strides must be calibrated.
         if torch.all(m.stride == 0):
             raise RuntimeError(
-                "model.head.stride is not set. Use MyYolo (which sets it "
+                "model.head.stride is not set. Use YOLO (which sets it "
                 "automatically) or call model._initialize_strides first.")
 
         self.params = params

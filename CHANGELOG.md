@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed 
 
+- **BREAKING — model class renamed**: `MyYolo` is now `YOLO`
+  (`from yolov8 import YOLO`). No alias is kept, so imports of
+  `MyYolo` must be updated. Checkpoints are not affected: the class
+  name is not part of the saved state dict.
 - **BREAKING — head architecture**: the intermediate widths of the
   detection head now follow the Ultralytics convention
   (`c2 = max(16, ch0/4, 64)`, `c3 = max(ch0, min(nc, 100))`). Small

@@ -29,7 +29,7 @@ from yolov8.logging import (setup_logging, add_file_logging,
                             log_model_summary, log_dict,
                             safe_torch_load)
 from yolov8.lossfn import ComputeLoss
-from yolov8.model import MyYolo
+from yolov8.model import YOLO
 from yolov8.training import (Trainer, ModelEMA, build_optimizer,
                              build_scheduler, freeze_feature_layers,
                              prepare_run_dir, save_config_used,
@@ -166,7 +166,7 @@ def main():
     train_loader, val_loader, test_loader, names = loaders
 
     # --- Model ---
-    model = MyYolo(version=cfg.model.version, num_classes=len(names),
+    model = YOLO(version=cfg.model.version, num_classes=len(names),
                    input_size=cfg.dataset.image_size).to(device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     logger.info(f"Model: YOLOv8-{cfg.model.version} | "

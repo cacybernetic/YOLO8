@@ -97,7 +97,7 @@ either on a single image or in real-time from a webcam.
 .
 ├── src/yolov8/
 │   ├── modules/          # Conv, C2f, SPPF, DFL, Backbone, Neck, Head
-│   ├── model.py          # MyYolo (backbone + neck + head)
+│   ├── model.py          # YOLO (backbone + neck + head)
 │   ├── lossfn.py         # TAL assigner + CIoU + DFL + BCE loss
 │   ├── dataset/
 │   │   ├── sources.py    # folder and zip dataset sources
