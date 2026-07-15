@@ -44,7 +44,7 @@ def compute_iou(box1, box2, eps=1e-7):
 class Assigner(nn.Module):
     """Task-Aligned assigner (TAL).
 
-    Paper: https://arxiv.org/abs/2108.07755 and the official YOLOv8 code.
+    Paper: TOOD (Feng et al., 2021), https://arxiv.org/abs/2108.07755.
     """
 
     def __init__(self, nc=80, top_k=13, alpha=1.0, beta=6.0, eps=1e-9):

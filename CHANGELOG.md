@@ -62,14 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MyYolo` must be updated. Checkpoints are not affected: the class
   name is not part of the saved state dict.
 - **BREAKING — head architecture**: the intermediate widths of the
-  detection head now follow the Ultralytics convention
+  detection head now follow the standard YOLOv8 convention
   (`c2 = max(16, ch0/4, 64)`, `c3 = max(ch0, min(nc, 100))`). Small
   class counts no longer squeeze the classification branch through an
-  `nc`-channel bottleneck. Parameter counts now match the official
+  `nc`-channel bottleneck. Parameter counts now match the reference
   models (v8s: 10.50M -> 11.17M). **Checkpoints trained before this
   change cannot be loaded** (different tensor shapes).
 - **BREAKING — C2f concat order**: the bottleneck chain now runs on
-  the second chunk and outputs are appended (official YOLOv8 layout).
+  the second chunk and outputs are appended (canonical YOLOv8 layout).
   Old checkpoints load but produce different results; retrain.
 - Validation and final test are now **disjoint** parts of the test
   split: model selection (best.pt, early stopping) no longer sees the
@@ -78,7 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   101-point AP implementation, so `map50` is comparable between
   `history.csv` and `results.csv`.
 - Weight decay is scaled by the effective batch size against a nominal
-  batch (`optimization.nbs`, default 64, Ultralytics convention).
+  batch (`optimization.nbs`, default 64).
 - Augmentation pipeline reordered to the YOLOv8 convention
   (geometry -> mixup -> HSV -> flips -> pixel effects); mosaic tiles
   are resized on their long side without letterbox padding; the MixUp

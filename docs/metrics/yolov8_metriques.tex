@@ -186,7 +186,7 @@
 
 \section{Contexte et objectifs}
 
-YOLOv8 (\textit{You Only Look Once version 8}), développé par Ultralytics, est
+YOLOv8 (\textit{You Only Look Once version 8}) est
 l'une des architectures les plus performantes pour la \textbf{détection et la
 reconnaissance d'objets} en temps réel. Évaluer correctement un tel modèle
 requiert de maîtriser un ensemble de métriques couvrant quatre dimensions
@@ -903,7 +903,7 @@ robuste qu'une valeur scalaire précise.
     \bottomrule
   \end{tabular}
   \end{center}
-  \textit{Source : Ultralytics benchmark, GPU Tesla T4, image 640$\times$640.}
+  \textit{Source : benchmarks publics YOLOv8, GPU Tesla T4, image 640$\times$640.}
 \end{examplebox}
 
 \section{GFLOPs — Giga Floating Point Operations}
@@ -1282,26 +1282,20 @@ ap   = compute_ap_11pts(prec, rec)
 print(f"AP (11pts): {ap:.4f}")  # ≈ 0.5848
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4. Entraînement YOLOv8 avec Ultralytics
+# 4. Entraînement YOLOv8 avec ce dépôt
 # ──────────────────────────────────────────────────────────────────────────────
-from ultralytics import YOLO
-
-model = YOLO("yolov8m.pt")           # Charger le modèle pré-entraîné
-
-results = model.train(
-    data   = "coco128.yaml",         # Fichier de configuration du dataset
-    epochs = 100,
-    imgsz  = 640,
-    batch  = 16,
-    device = 0                       # GPU 0
-)
+#   trainyolo8 --config gpu/configs/train.yaml
+#
+# La configuration (dataset, epochs, image_size, batch_size, device...)
+# se fait dans le fichier YAML. Les courbes, l'historique et les poids
+# sont écrits dans runs/<run_name>/train/.
 
 # 5. Évaluation
-metrics = model.val(data="coco128.yaml", imgsz=640)
-print(f"mAP50    : {metrics.box.map50:.4f}")
-print(f"mAP50-95 : {metrics.box.map:.4f}")
-print(f"Precision: {metrics.box.mp:.4f}")
-print(f"Recall   : {metrics.box.mr:.4f}")
+#   evalyolo8 --config gpu/configs/eval.yaml
+#
+# Les métriques finales (mAP50, mAP50-95, precision, recall, F1,
+# matrice de confusion, tables par classe) sont écrites dans
+# runs/<run_name>/eval/ (results.csv, per_class.csv, plots).
 \end{lstlisting}
 
 % ════════════════════════════════════════════════════════════════════════════════

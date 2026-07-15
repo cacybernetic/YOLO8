@@ -130,8 +130,8 @@ def _class_ap(tp_c, conf_c, n_gt_c, n_pred_c, px, eps):
 def find_best_f1_threshold(per_class, px) -> Tuple[float, float]:
     """Return (best confidence threshold, macro F1 at that threshold).
 
-    The threshold maximizes the mean of the per-class F1 curves. This is
-    the Ultralytics convention (see plots/F1_curve.png).
+    The threshold maximizes the mean of the per-class F1 curves (the
+    value plotted in plots/F1_curve.png).
     """
     if not per_class:
         return 0.0, 0.0

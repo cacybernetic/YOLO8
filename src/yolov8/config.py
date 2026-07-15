@@ -89,9 +89,9 @@ class OptimizationConfig:
     momentum: float = 0.937
     weight_decay: float = 0.0005
     scheduler: str = 'cosine'   # 'cosine' | 'linear'
-    # Nominal batch size the default hyperparameters were tuned for
-    # (Ultralytics convention): the weight decay is scaled by
-    # batch_size * grad_accum / nbs. Set 0 to disable the scaling.
+    # Nominal batch size the default hyperparameters were tuned for:
+    # the weight decay is scaled by batch_size * grad_accum / nbs.
+    # Set 0 to disable the scaling.
     nbs: int = 64
     warmup_epochs: float = 3.0
     warmup_momentum: float = 0.8

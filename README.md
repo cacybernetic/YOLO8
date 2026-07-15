@@ -58,7 +58,7 @@ inference on static images or live webcam feed.
 ## Description
 
 This project is a full re-implementation of YOLOv8 in pure PyTorch — no
-Ultralytics dependency. It is designed to be readable, hackable, and easy
+third-party YOLO dependency. It is designed to be readable, hackable, and easy
 to run on your own dataset. Every component (backbone, neck, head, loss,
 metrics, augmentations, trainer) is written from scratch and documented.
 
@@ -189,7 +189,7 @@ channels) and ratio `r` (extra width of the deepest stage).
 | `l`     | 1.0  | 1.0  | 1.0 | 43.69 M        |
 | `x`     | 1.0  | 1.25 | 1.0 | 68.23 M        |
 
-These counts match the official YOLOv8 models. Run
+These counts match the reference YOLOv8 models. Run
 `python -m yolov8.model` to check them yourself.
 
 ### Backbone
@@ -231,7 +231,7 @@ regresses ambiguous edges much better than a single number.
 
 Two details that are easy to get wrong:
 
-- **Branch widths** follow the Ultralytics convention:
+- **Branch widths** follow the standard YOLOv8 convention:
   `box_mid = max(16, ch0/4, 64)` and `cls_mid = max(ch0, min(nc, 100))`.
   The class branch width must not follow `nc` alone: with 10 classes
   that would squeeze every classification feature through a 10-channel
@@ -540,7 +540,7 @@ confidence than a barely aligned one.
   `wd * (batch_size * grad_accum) / nbs` with `nbs: 64`. The default
   `0.0005` was tuned for a batch of 64; a batch of 16 would otherwise
   be over-regularized.
-- **Full warmup** (`lr_schedulers.py`), Ultralytics style: the weight
+- **Full warmup** (`lr_schedulers.py`): the weight
   LR rises from 0 to `max_lr`, the bias LR comes **down** from
   `warmup_bias_lr: 0.1` to `max_lr` (the biases need to move fast at
   the start), and the momentum rises from `warmup_momentum: 0.8` to

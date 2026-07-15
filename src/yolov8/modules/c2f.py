@@ -47,7 +47,7 @@ class C2f(nn.Module):
     def forward(self, x):
         # Canonical YOLOv8 ordering: [x1, x2, m1(x2), m2(m1(x2)), ...].
         # The bottleneck chain runs on the SECOND chunk and new outputs
-        # are appended, matching the official C2f weight layout.
+        # are appended, matching the canonical C2f weight layout.
         x = self.conv1(x)
         x1 = x[:, :x.shape[1] // 2, :, :]
         x2 = x[:, x.shape[1] // 2:, :, :]

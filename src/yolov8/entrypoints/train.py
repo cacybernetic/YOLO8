@@ -98,9 +98,9 @@ def build_training_objects(cfg: TrainConfig, model, device,
                            steps_per_epoch):
     """Optimizer, scheduler, EMA and AMP scaler from the config."""
     opt = cfg.optimization
-    # Ultralytics convention: the default weight decay (0.0005) was
-    # tuned for an effective batch of `nbs` (64). Smaller batches need
-    # proportionally less decay, otherwise they are over-regularized.
+    # The default weight decay (0.0005) was tuned for an effective
+    # batch of `nbs` (64). Smaller batches need proportionally less
+    # decay, otherwise they are over-regularized.
     weight_decay = opt.weight_decay
     if opt.nbs and opt.nbs > 0:
         effective_bs = opt.batch_size * max(opt.grad_accum, 1)

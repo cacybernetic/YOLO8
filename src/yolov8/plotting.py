@@ -159,8 +159,8 @@ def plot_confusion_matrix(cm, class_names, output_path, normalize=True,
                           title="Confusion matrix"):
     """Plot the (N+1) x (N+1) confusion matrix (last class: background).
 
-    When normalize is True, each column is divided by its sum
-    (Ultralytics convention): cell (i, j) reads "which part of the
+    When normalize is True, each column is divided by its sum:
+    cell (i, j) reads "which part of the
     ground truths of class j was predicted as class i".
     """
     nc = len(class_names)

@@ -10,7 +10,7 @@ import math
 class BaseLR:
     """Per-step scheduler with the full warmup.
 
-    During warmup (Ultralytics convention):
+    During warmup (standard YOLO warmup recipe):
       - the weight LR goes up linearly from 0 to max_lr;
       - the bias LR goes DOWN from warmup_bias_lr (0.1) to max_lr, so
         biases can move fast early without hurting the weights;
@@ -19,7 +19,7 @@ class BaseLR:
     Warmup budget rules:
       - `warmup_epochs: 0` really disables the warmup;
       - when warmup is requested, at least 100 steps are used for
-        stability (Ultralytics floor);
+        stability (empirical floor);
       - the warmup never consumes more than 30% of the total step
         budget, so short trainings on small datasets keep a real
         decay phase instead of spending every step ramping up.

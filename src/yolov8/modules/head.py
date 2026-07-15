@@ -33,7 +33,7 @@ class Head(nn.Module):
         d, w, r = yolo_params(version=version)
         in_channels = [int(256 * w), int(512 * w), int(512 * w * r)]
 
-        # Intermediate widths (Ultralytics Detect convention). The class
+        # Intermediate widths (standard YOLOv8 head sizing). The class
         # branch width must NOT depend on the class count alone: with a
         # small nc (1-10 classes) that would squeeze all classification
         # features through a 1-10 channel bottleneck and cap the mAP.
@@ -66,7 +66,7 @@ class Head(nn.Module):
         Without this step, the class logits start around sigmoid = 0.5 for
         every anchor and class. The summed BCE then gives a very large loss
         at the start and gradients saturate the clipping for several epochs.
-        Convention (same as Ultralytics Detect.bias_init):
+        Convention (standard YOLOv8 prior initialization):
           - box branch: bias set to 1.0
           - cls branch: bias set to log(5 / nc / (640 / stride)^2), a small
             prior that matches the expected number of objects per cell.

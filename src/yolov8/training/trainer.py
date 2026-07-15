@@ -349,9 +349,9 @@ class Trainer:
             loss_box, loss_cls, loss_dfl = self.loss_fn(outputs, targets)
             loss = loss_box + loss_cls + loss_dfl
 
-        # `* bs`: the loss is normalized per target; Ultralytics
-        # backpropagates loss.sum() * batch_size and the default
-        # hyperparameters are tuned for that gradient scale.
+        # `* bs`: the loss is normalized per target; the reference
+        # YOLOv8 recipe backpropagates loss.sum() * batch_size and the
+        # default hyperparameters are tuned for that gradient scale.
         scaled = loss * bs / accum
         if self.scaler is not None:
             self.scaler.scale(scaled).backward()

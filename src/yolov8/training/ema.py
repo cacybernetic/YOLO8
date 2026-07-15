@@ -7,7 +7,8 @@ import torch
 
 
 class ModelEMA:
-    """Smoothed copy of the model weights (Ultralytics convention).
+    """Smoothed copy of the model weights (Polyak averaging with a
+    warmup ramp on the decay).
 
     Update rule: ema = d * ema + (1 - d) * model, where the decay `d`
     grows toward `decay` following d(u) = decay * (1 - exp(-u / tau)).
