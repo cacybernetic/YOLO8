@@ -86,6 +86,14 @@ class Trainer:
         self.scaler = scaler
         self.raw_config = raw_config or {}
 
+        # The reference `loss.sum() * batch_size` gradient scaling is an
+        # SGD idiom: SGD's step is proportional to the gradient magnitude,
+        # and its lr/clip defaults are tuned for that scale. Adam/AdamW are
+        # invariant to a constant gradient rescale, so `* batch_size` would
+        # not change the step at all — it would only inflate grad_norm and
+        # make grad_clip fire on every step. Gate it on the real optimizer.
+        self._sgd_loss_scaling = isinstance(optimizer, torch.optim.SGD)
+
         # Fail fast on a config typo: a silent warning at every epoch
         # would mean best.pt is never written.
         if cfg.checkpoint.best_metric not in ALLOWED_BEST_METRICS:
@@ -365,14 +373,19 @@ class Trainer:
             loss_box, loss_cls, loss_dfl = self.loss_fn(outputs, targets)
             loss = loss_box + loss_cls + loss_dfl
 
-        # `* bs`: the loss is normalized per target; the reference
-        # YOLOv8 recipe backpropagates loss.sum() * batch_size and the
-        # default hyperparameters are tuned for that gradient scale.
-        # No `/ accum` here: summing `loss * bs` over the micro batches
-        # yields the gradient of the EFFECTIVE batch (bs * accum) — the
-        # same scale the weight decay is adjusted for (nbs). Dividing
-        # by accum would shrink every step by that factor.
-        scaled = loss * bs
+        if self._sgd_loss_scaling:
+            # SGD: reproduce the reference `loss.sum() * batch_size` scale.
+            # Summing `loss * bs` over the micro batches (no `/ accum`)
+            # yields the gradient of the EFFECTIVE batch (bs * accum), the
+            # same scale the weight decay is adjusted for (nbs).
+            scaled = loss * bs
+        else:
+            # Adam/AdamW: scale-invariant, so `* bs` is inert for the step.
+            # Use the mean loss averaged over the accumulation group; the
+            # gradient magnitude then reflects the real per-target loss,
+            # keeping grad_norm meaningful and grad_clip a genuine safety
+            # net instead of an every-step shrink.
+            scaled = loss / accum
         if self.scaler is not None:
             self.scaler.scale(scaled).backward()
         else:

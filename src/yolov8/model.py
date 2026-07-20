@@ -44,7 +44,9 @@ class YOLO(nn.Module):
                 input_size / n2.shape[-1],
                 input_size / n3.shape[-1],
             ], dtype=torch.float32)
-        self.head.stride = strides
+        # In-place copy into the registered buffer: keeps its identity and
+        # device instead of rebinding the attribute to a loose CPU tensor.
+        self.head.stride.copy_(strides)
         if was_training:
             self.train()
 

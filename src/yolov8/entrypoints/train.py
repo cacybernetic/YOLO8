@@ -113,6 +113,15 @@ def build_training_objects(cfg: TrainConfig, model, device,
     optimizer = build_optimizer(
         model, name=opt.optimizer, lr=opt.max_lr,
         momentum=opt.momentum, weight_decay=weight_decay)
+    # Adam/AdamW are scale-invariant, so the learning rate is the only
+    # real lever on the step size. From scratch they usually need
+    # ~1e-3..2e-3; a much lower value converges very slowly. This does
+    # not change the configured lr, it only flags a likely misconfig.
+    if opt.optimizer.lower() in ('adam', 'adamw') and opt.max_lr < 5e-4:
+        logger.warning(
+            f"max_lr={opt.max_lr:g} is low for {opt.optimizer.upper()} "
+            f"from scratch (typical range 1e-3..2e-3). Expect slow "
+            f"convergence; raise max_lr if the mAP plateaus early.")
     scheduler = build_scheduler(
         opt.scheduler, opt.max_lr, opt.min_lr, opt.warmup_epochs,
         opt.epochs, steps_per_epoch, momentum=opt.momentum,
